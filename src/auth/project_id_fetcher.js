@@ -153,12 +153,17 @@ class ProjectIdFetcher {
     });
 
     const data = response.data;
+    //console.log(JSON.stringify(data,null,2));
 
     // 检查是否有 currentTier（表示用户已激活）
     if (data?.currentTier) {
       log.info('[loadCodeAssist] 用户已激活');
       const projectId = data.cloudaicompanionProject || null;
-      const sub = data.currentTier.id || 'free-tier';
+      let sub = data.currentTier.id || 'free-tier';
+      const sub2 = data.paidTier.id;
+      if (sub2){
+        sub = sub2;
+      }
       
       // 提取积分信息（仅 free-tier 以上订阅才有）
       let credits = null;

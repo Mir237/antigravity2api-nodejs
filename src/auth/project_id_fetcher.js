@@ -332,6 +332,38 @@ class ProjectIdFetcher {
   }
 
   /**
+   * 专门获取积分和订阅信息
+   * @param {Object} token - Token 对象
+   * @returns {Promise<{sub: string, credits: number|null, isActivated: boolean}>}
+   */
+  async fetchSubscriptionAndCredits(token) {
+    const result = {
+      sub: 'free-tier',
+      credits: null,
+      isActivated: false
+    };
+
+    try {
+      const loadResult = await this._tryLoadCodeAssist(token);
+      
+      if (loadResult?.isActivated) {
+        result.sub = loadResult.sub || 'free-tier';
+        result.credits = loadResult.credits;
+        result.isActivated = true;
+        
+        log.info(`[fetchSubscriptionAndCredits] 订阅: ${result.sub}, 积分: ${result.credits}`);
+      } else {
+        log.info('[fetchSubscriptionAndCredits] 账号未激活，保持 free-tier');
+      }
+      
+      return result;
+    } catch (err) {
+      log.error(`[fetchSubscriptionAndCredits] 获取失败: ${err.message}`);
+      return result;
+    }
+  }
+
+  /**
    * 设置最大重试次数
    * @param {number} retries - 重试次数
    */

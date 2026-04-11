@@ -216,9 +216,51 @@ router.post('/tokens/reload', cookieAuthMiddleware, async (req, res) => {
 router.post('/tokens/:tokenId/refresh', cookieAuthMiddleware, async (req, res) => {
   const { tokenId } = req.params;
   try {
+    // 1. 刷新 access_token
     const result = await tokenManager.refreshTokenById(tokenId);
-    logger.info(`手动刷新Token: ${tokenId}`);
-    res.json({ success: true, message: 'Token刷新成功', data: result });
+    
+    // 2. 获取完整的 token 数据
+    const token = await tokenManager.findTokenById(tokenId);
+    if (!token) {
+      return res.status(404).json({ success: false, message: 'Token不存在' });
+    }
+    
+    // 3. 重新获取积分和订阅信息
+    try {
+      const subscriptionInfo = await tokenManager.projectIdFetcher.fetchSubscriptionAndCredits(token);
+      
+      // 4. 更新本地凭证信息（避免本地信息落后）
+      const updates = {
+        sub: subscriptionInfo.sub,
+        credits: subscriptionInfo.credits
+      };
+      
+      // 只有在获取到新信息时才更新
+      if (subscriptionInfo.isActivated) {
+        await tokenManager.updateTokenById(tokenId, updates);
+        logger.info(`[刷新Token] 已更新订阅和积分信息: sub=${updates.sub}, credits=${updates.credits}`);
+      }
+      
+      // 5. 返回完整的刷新结果
+      res.json({
+        success: true,
+        message: 'Token刷新成功',
+        data: {
+          ...result,
+          sub: subscriptionInfo.sub,
+          credits: subscriptionInfo.credits,
+          isActivated: subscriptionInfo.isActivated
+        }
+      });
+    } catch (subscriptionError) {
+      // 即使获取订阅信息失败，token 刷新仍然成功
+      logger.warn(`获取订阅信息失败: ${subscriptionError.message}`);
+      res.json({
+        success: true,
+        message: 'Token刷新成功（但获取订阅信息失败）',
+        data: result
+      });
+    }
   } catch (error) {
     logger.error('刷新Token失败:', error.message);
     const status = error.statusCode || 500;

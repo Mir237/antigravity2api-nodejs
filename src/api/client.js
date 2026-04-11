@@ -190,6 +190,7 @@ export async function generateAssistantResponse(requestBody, token, callback) {
   if (dumpId) {
     await dumpFinalRequest(dumpId, requestBody);
   }
+  //console.log(JSON.stringify(requestBody,null,2));
 
   // 在 state 中临时缓存思维链签名，供流式多片段复用，并携带 session 与 model 信息以写入全局缓存
   const state = {

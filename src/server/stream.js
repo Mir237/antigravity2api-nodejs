@@ -300,7 +300,7 @@ function isRetryableError(status, error) {
 
 /**
  * 带 429/503 重试的执行器
- * @param {Function} fn - 要执行的异步函数，接收 attempt 参数
+ * @param {Function} fn - 要执行的异步函数，接收 attempt 和 shouldUseCredits 参数
  * @param {number} maxRetries - 最大重试次数
  * @param {Object} options - 可选参数
  * @param {string} options.loggerPrefix - 日志前缀
@@ -308,8 +308,8 @@ function isRetryableError(status, error) {
  * @param {string} options.tokenId - Token ID（用于模型系列禁用）
  * @param {string} options.modelId - 模型 ID（用于模型系列禁用）
  * @param {Function} options.refreshQuota - 刷新额度的回调函数（当需要获取准确恢复时间时调用）
- * @param {Object} options.tokenManager - TokenManager 实例（新增）
- * @param {Object} options.token - Token 对象（新增）
+ * @param {Object} options.tokenManager - TokenManager 实例
+ * @param {Object} options.token - Token 对象
  * @returns {Promise<any>}
  */
 export async function with429Retry(fn, maxRetries, options = {}, legacyOnAttempt = null) {
@@ -339,6 +339,7 @@ export async function with429Retry(fn, maxRetries, options = {}, legacyOnAttempt
   const retries = Number.isFinite(maxRetries) && maxRetries > 0 ? Math.floor(maxRetries) : 0;
   const cooldownThreshold = config.quota?.longCooldownThreshold || LONG_COOLDOWN_THRESHOLD;
   let attempt = 0;
+  let shouldUseCredits = false; // 标记是否应该使用积分
 
   // 首次执行 + 最多 retries 次重试
   while (true) {
@@ -347,7 +348,10 @@ export async function with429Retry(fn, maxRetries, options = {}, legacyOnAttempt
       if (typeof onAttempt === 'function') {
         onAttempt(attempt);
       }
-      return await fn(attempt);
+      
+      // 将 shouldUseCredits 参数传递给回调函数
+      // 回调函数负责根据此参数动态生成 requestBody
+      return await fn(attempt, shouldUseCredits);
     } catch (error) {
       // 兼容多种错误格式：error.status, error.statusCode, error.response?.status
       const status = Number(error.status || error.statusCode || error.response?.status);
@@ -435,10 +439,23 @@ export async function with429Retry(fn, maxRetries, options = {}, legacyOnAttempt
         // 短时间等待，正常重试
         if (attempt < retries) {
           const nextAttempt = attempt + 1;
+          
+          // 如果是第一次重试（attempt=0）且未开启 alwaysUseCredits，尝试使用积分重试
+          if (attempt === 0 && !config.alwaysUseCredits && !shouldUseCredits) {
+            shouldUseCredits = true;
+            logger.warn(
+              `${loggerPrefix}收到 ${errorType}，尝试使用 Google One AI 积分进行重试`
+            );
+            // 不增加 attempt 计数，直接重试
+            continue;
+          }
+          
+          // 普通重试
           const waitMs = computeBackoffMs(nextAttempt, explicitDelayMs);
           logger.warn(
             `${loggerPrefix}收到 ${errorType}，等待 ${waitMs}ms 后进行第 ${nextAttempt} 次重试（共 ${retries} 次）` +
-            (explicitDelayMs !== null ? `（上游提示≈${explicitDelayMs}ms）` : '')
+            (explicitDelayMs !== null ? `（上游提示≈${explicitDelayMs}ms）` : '') +
+            (shouldUseCredits ? '（使用积分）' : '')
           );
           await sleep(waitMs);
           attempt = nextAttempt;

@@ -65,6 +65,7 @@
     "cacheToolSignatures": true,
     "cacheImageSignatures": true,
     "cacheThinking": true,
-    "fakeNonStream": true
+    "fakeNonStream": true,
+    "alwaysUseCredits": false
   }
 }

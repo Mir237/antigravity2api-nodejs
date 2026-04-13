@@ -14,6 +14,8 @@ const CACHE_DIR = path.join(process.cwd(), 'data', 'signature-cache');
 
 // 上限：每个模型保留的签名数量
 const MAX_SIGNATURES_PER_MODEL = 3;
+const MAX_TOOL_CALL_SIGNATURES_PER_MODEL = 64;
+const TOOL_CALL_ENTRY_TTL_MS = 30 * 60 * 1000;
 
 /**
  * 确保缓存目录存在
@@ -53,19 +55,39 @@ function getCacheFilePath(modelKey) {
  * @param {string} modelKey - 模型 key
  * @returns {Array} 签名数组 [{ signature, content }, ...]
  */
-function readModelCache(modelKey) {
-  if (!modelKey) return [];
+function readCacheData(modelKey) {
+  if (!modelKey) {
+    return {
+      signatures: [],
+      toolCallSignatures: []
+    };
+  }
   
   try {
     const filePath = getCacheFilePath(modelKey);
-    if (!fs.existsSync(filePath)) return [];
+    if (!fs.existsSync(filePath)) {
+      return {
+        signatures: [],
+        toolCallSignatures: []
+      };
+    }
     
     const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    return Array.isArray(data.signatures) ? data.signatures : [];
+    return {
+      signatures: Array.isArray(data.signatures) ? data.signatures : [],
+      toolCallSignatures: Array.isArray(data.toolCallSignatures) ? data.toolCallSignatures : []
+    };
   } catch (e) {
     log.warn(`读取签名缓存失败 (${modelKey}):`, e?.message || e);
-    return [];
+    return {
+      signatures: [],
+      toolCallSignatures: []
+    };
   }
+}
+
+function readModelCache(modelKey) {
+  return readCacheData(modelKey).signatures;
 }
 
 /**
@@ -73,7 +95,7 @@ function readModelCache(modelKey) {
  * @param {string} modelKey - 模型 key
  * @param {Array} signatures - 签名数组
  */
-function writeModelCache(modelKey, signatures) {
+function writeCacheData(modelKey, cacheData) {
   if (!modelKey) return;
   
   try {
@@ -81,13 +103,20 @@ function writeModelCache(modelKey, signatures) {
     const filePath = getCacheFilePath(modelKey);
     const data = {
       model: modelKey,
-      signatures: signatures,
+      signatures: Array.isArray(cacheData?.signatures) ? cacheData.signatures : [],
+      toolCallSignatures: Array.isArray(cacheData?.toolCallSignatures) ? cacheData.toolCallSignatures : [],
       lastModified: Date.now()
     };
     fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
   } catch (e) {
     log.warn(`写入签名缓存失败 (${modelKey}):`, e?.message || e);
   }
+}
+
+function writeModelCache(modelKey, signatures) {
+  const cacheData = readCacheData(modelKey);
+  cacheData.signatures = signatures;
+  writeCacheData(modelKey, cacheData);
 }
 
 /**
@@ -128,6 +157,61 @@ function pushEntry(modelKey, entry) {
   }
   
   writeModelCache(modelKey, signatures);
+}
+
+function pruneToolCallEntries(entries) {
+  const now = Date.now();
+  const filtered = Array.isArray(entries)
+    ? entries.filter((entry) => {
+      if (!entry?.toolCallId || !entry?.signature) return false;
+      if (typeof entry.ts !== 'number') return true;
+      return now - entry.ts <= TOOL_CALL_ENTRY_TTL_MS;
+    })
+    : [];
+
+  while (filtered.length > MAX_TOOL_CALL_SIGNATURES_PER_MODEL) {
+    filtered.shift();
+  }
+
+  return filtered;
+}
+
+function pushToolCallEntry(modelKey, entry) {
+  if (!modelKey || !entry?.toolCallId || !entry?.signature) return;
+
+  const cacheData = readCacheData(modelKey);
+  const toolCallSignatures = pruneToolCallEntries(cacheData.toolCallSignatures);
+  const existingIndex = toolCallSignatures.findIndex(
+    (item) => item.toolCallId === entry.toolCallId
+  );
+
+  if (existingIndex !== -1) {
+    toolCallSignatures.splice(existingIndex, 1);
+  }
+
+  toolCallSignatures.push({
+    toolCallId: entry.toolCallId,
+    signature: entry.signature,
+    content: entry.content || ' ',
+    ts: Date.now()
+  });
+
+  cacheData.toolCallSignatures = pruneToolCallEntries(toolCallSignatures);
+  writeCacheData(modelKey, cacheData);
+}
+
+function getToolCallEntry(modelKey, toolCallId) {
+  if (!modelKey || !toolCallId) return null;
+
+  const cacheData = readCacheData(modelKey);
+  const toolCallSignatures = pruneToolCallEntries(cacheData.toolCallSignatures);
+  if (toolCallSignatures.length !== cacheData.toolCallSignatures.length) {
+    cacheData.toolCallSignatures = toolCallSignatures;
+    writeCacheData(modelKey, cacheData);
+  }
+
+  const entry = toolCallSignatures.find((item) => item.toolCallId === toolCallId);
+  return entry || null;
 }
 
 /**
@@ -217,6 +301,34 @@ export function getSignature(sessionId, model, options = {}) {
   return {
     signature: entry.signature,
     content: config.cacheThinking ? entry.content : ' '
+  };
+}
+
+export function setToolCallSignature(sessionId, model, toolCallId, signature, content = ' ', options = {}) {
+  if (!toolCallId || !signature || !model) return;
+
+  const isImage = options.isImageModel ?? isImageModel(model);
+  if (!shouldCacheSignature({ hasTools: true, isImageModel: isImage })) {
+    return;
+  }
+
+  const processedContent = processThinkingContent(content);
+  pushToolCallEntry(makeModelKey(model), {
+    toolCallId,
+    signature,
+    content: processedContent
+  });
+}
+
+export function getToolCallSignature(sessionId, model, toolCallId) {
+  if (!toolCallId || !model) return null;
+
+  const entry = getToolCallEntry(makeModelKey(model), toolCallId);
+  if (!entry) return null;
+
+  return {
+    signature: entry.signature,
+    content: config.cacheThinking ? (entry.content || ' ') : ' '
   };
 }
 

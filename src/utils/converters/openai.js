@@ -1,5 +1,6 @@
 // OpenAI 格式转换工具
 import config from '../../config/config.js';
+import { getToolCallSignature } from '../thoughtSignatureCache.js';
 import { extractSystemInstruction } from '../utils.js';
 import { convertOpenAIToolsToAntigravity } from '../toolConverter.js';
 import {
@@ -52,8 +53,11 @@ function handleAssistantMessage(message, antigravityMessages, enableThinking, ac
   const toolCalls = hasToolCalls
     ? message.tool_calls.map(toolCall => {
       const safeName = processToolName(toolCall.function.name, sessionId, actualModelName);
+      const cachedToolCallSignature = toolCall.id
+        ? getToolCallSignature(sessionId, actualModelName, toolCall.id)
+        : null;
       const signature = enableThinking
-        ? (toolCall.thoughtSignature || toolSignature || message.thoughtSignature || reasoningSignature)
+        ? (toolCall.thoughtSignature || cachedToolCallSignature?.signature || toolSignature || message.thoughtSignature || reasoningSignature)
         : null;
       return createFunctionCallPart(toolCall.id, safeName, toolCall.function.arguments, signature);
     })

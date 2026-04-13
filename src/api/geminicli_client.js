@@ -19,6 +19,7 @@ import { getUpstreamStatus, readUpstreamErrorBody, isCallerDoesNotHavePermission
 import { createStreamLineProcessor } from './streamLineProcessor.js';
 import { runSseStream, postJsonAndParse } from './geminiTransport.js';
 import { parseGeminiCandidateParts, toOpenAIUsage } from './geminiResponseParser.js';
+import { buildAuthorizedHeaders } from '../utils/googleAuth.js';
 
 // ==================== 调试：复用 client.js 的调试日志实现 ====================
 
@@ -41,13 +42,10 @@ import { parseGeminiCandidateParts, toOpenAIUsage } from './geminiResponseParser
  */
 function buildHeaders(token) {
   const geminicliConfig = config.geminicli?.api || {};
-  return {
-    'Host': geminicliConfig.host || 'cloudcode-pa.googleapis.com',
-    'User-Agent': geminicliConfig.userAgent || 'GeminiCLI/0.1.5 (Windows; AMD64)',
-    'Authorization': `Bearer ${token.access_token}`,
-    'Content-Type': 'application/json',
-    'Accept-Encoding': 'gzip'
-  };
+  return buildAuthorizedHeaders(token, {
+    host: geminicliConfig.host || 'cloudcode-pa.googleapis.com',
+    userAgent: geminicliConfig.userAgent || 'GeminiCLI/0.1.5 (Windows; AMD64)'
+  });
 }
 
 /**

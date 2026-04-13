@@ -1,6 +1,6 @@
 import memoryManager, { registerMemoryPoolCleanup } from '../utils/memoryManager.js';
 import { generateToolCallId } from '../utils/idGenerator.js';
-import { setSignature, shouldCacheSignature, isImageModel } from '../utils/thoughtSignatureCache.js';
+import { setSignature, setToolCallSignature, shouldCacheSignature, isImageModel } from '../utils/thoughtSignatureCache.js';
 import { getOriginalToolName } from '../utils/toolNameCache.js';
 import config from '../config/config.js';
 
@@ -149,6 +149,16 @@ function parseAndEmitStreamChunk(line, state, callback) {
         if (shouldCacheSignature({ hasTools, isImageModel: isImage })) {
           const content = state.reasoningContent || ' ';
           setSignature(state.sessionId, state.model, state.reasoningSignature, content, { hasTools, isImageModel: isImage });
+          if (hasTools) {
+            for (const toolCall of state.toolCalls) {
+              if (toolCall?.id && toolCall?.thoughtSignature) {
+                setToolCallSignature(state.sessionId, state.model, toolCall.id, toolCall.thoughtSignature, content, {
+                  hasTools: true,
+                  isImageModel: isImage
+                });
+              }
+            }
+          }
         }
       }
       

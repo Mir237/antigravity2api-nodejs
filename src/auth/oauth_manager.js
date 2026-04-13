@@ -132,6 +132,7 @@ class OAuthManager {
 			const validation = await this.validateAccount(account.access_token);
 			
 			account.projectId = validation.projectId;
+			account.quotaProjectId = validation.quotaProjectId || validation.projectId || null;
 			account.sub = validation.sub;
 			account.hasQuota = validation.hasQuota;
 			account.isActivated = validation.isActivated;

@@ -40,7 +40,7 @@ class TokenManager {
 
   /**
    * 规范化 token 对象，确保所有必需字段存在
-   * - sessionId: 每次启动必须新生成（代表 IDE 会话，上游会校验）
+   * - sessionId: 优先复用已有 Cloud Code 会话标识，缺失时再生成
    * - instanceId/deviceId: 有值就保留，缺失或空串才生成
    * - sub: 有值就保留（后续 fetchProjectId 时上游返回新值会覆盖）
    * - 布尔字段用 ?? 保留 false 的语义
@@ -51,7 +51,8 @@ class TokenManager {
   static _normalizeToken(token) {
     return {
       ...token,
-      sessionId: generateSessionId(),
+      sessionId: token.sessionId || generateSessionId(),
+      quotaProjectId: token.quotaProjectId || token.quota_project_id || null,
       instanceId: token.instanceId || generateInstanceId(),
       deviceId: token.deviceId || randomUUID(),
       sub: token.sub || 'g1-pro-tier',
@@ -419,7 +420,7 @@ class TokenManager {
 
     // 1. 获取 projectId、订阅和积分信息
     const fetchResult = await this.projectIdFetcher.fetchProjectId(tokenData);
-    const { projectId, sub, credits } = fetchResult;
+    const { projectId, quotaProjectId, sub, credits } = fetchResult;
 
     // 如果 fetchProjectId 没返回积分，尝试单独获取
     let finalCredits = credits !== undefined ? credits : tokenData.credits;
@@ -429,11 +430,12 @@ class TokenManager {
     const token = {
       ...tokenData,
       projectId,
+      quotaProjectId: tokenData.quotaProjectId || tokenData.quota_project_id || quotaProjectId || projectId || null,
       sub,
       credits: finalCredits,
       enable: true,
       hasQuota: true,
-      sessionId: generateSessionId(),
+      sessionId: tokenData.sessionId || generateSessionId(),
       instanceId: generateInstanceId(),
       deviceId: randomUUID()
     };
@@ -611,6 +613,7 @@ class TokenManager {
           timestamp: token.timestamp,
           enable: token.enable !== false,
           projectId: token.projectId || null,
+          quotaProjectId: token.quotaProjectId || token.quota_project_id || null,
           email: token.email || null,
           hasQuota: token.hasQuota !== false,
           sub: token.sub || null,
@@ -835,7 +838,7 @@ class TokenManager {
       await this._persistToken(token);
     }
 
-    const { projectId, sub } = await this.projectIdFetcher.fetchProjectId(token);
+    const { projectId, quotaProjectId, sub } = await this.projectIdFetcher.fetchProjectId(token);
     if (!projectId) {
       throw new TokenError('无法获取 projectId，该账号可能无资格', null, 400);
     }
@@ -843,6 +846,7 @@ class TokenManager {
     // 更新 token
     this.pool.update(tokenId, {
       projectId,
+      quotaProjectId: quotaProjectId || projectId,
       sub,
       hasQuota: true
     });
@@ -850,7 +854,7 @@ class TokenManager {
     // 持久化
     await this._persistToken(token);
 
-    return { projectId };
+    return { projectId, quotaProjectId: quotaProjectId || projectId };
   }
 }
 

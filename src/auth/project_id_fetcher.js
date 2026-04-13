@@ -1,6 +1,7 @@
 import { log } from '../utils/logger.js';
 import config from '../config/config.js';
 import requesterManager from '../utils/requesterManager.js';
+import { buildAuthorizedHeaders } from '../utils/googleAuth.js';
 
 /**
  * ProjectId 获取类
@@ -21,6 +22,7 @@ class ProjectIdFetcher {
   async validateAccount(token) {
     const result = {
       projectId: null,
+      quotaProjectId: null,
       sub: 'free-tier',
       hasQuota: false,
       source: 'none',
@@ -35,6 +37,7 @@ class ProjectIdFetcher {
       // 场景2/3: 已激活账号（loadCodeAssist 返回 currentTier 和 projectId）
       if (loadResult?.projectId) {
         result.projectId = loadResult.projectId;
+        result.quotaProjectId = loadResult.quotaProjectId || loadResult.projectId;
         result.sub = loadResult.sub;
         result.hasQuota = true;
         result.source = 'loadCodeAssist';
@@ -67,6 +70,7 @@ class ProjectIdFetcher {
       // 场景4: Pro账号未激活（onboardUser 可以获取 projectId）
       if (onboardResult?.projectId) {
         result.projectId = onboardResult.projectId;
+        result.quotaProjectId = onboardResult.quotaProjectId || onboardResult.projectId;
         result.sub = 'g1-pro-tier'; // Pro账号的默认订阅
         result.hasQuota = true;
         result.source = 'onboardUser';
@@ -97,13 +101,16 @@ class ProjectIdFetcher {
    */
   async fetchProjectId(token) {
     let cachedCredits = null;
+    let cachedQuotaProjectId = token?.quotaProjectId || token?.projectId || null;
 
     // 步骤1: 尝试 loadCodeAssist
     try {
       const result = await this._tryLoadCodeAssist(token);
       // 先缓存积分（即使 projectId 为空，积分信息也可能有效）
       if (result?.credits != null) cachedCredits = result.credits;
+      if (result?.quotaProjectId) cachedQuotaProjectId = result.quotaProjectId;
       if (result?.projectId) {
+        result.quotaProjectId = result.quotaProjectId || cachedQuotaProjectId || result.projectId;
         return result;
       }
       log.warn('[fetchProjectId] loadCodeAssist 未返回 projectId，回退到 onboardUser');
@@ -115,14 +122,15 @@ class ProjectIdFetcher {
     try {
       const result = await this._tryOnboardUser(token);
       if (result?.projectId) {
+        result.quotaProjectId = result.quotaProjectId || cachedQuotaProjectId || result.projectId;
         if (cachedCredits != null) result.credits = cachedCredits;
         return result;
       }
       log.error('[fetchProjectId] loadCodeAssist 和 onboardUser 均未能获取 projectId');
-      return { projectId: undefined, sub: 'free-tier', credits: cachedCredits };
+      return { projectId: undefined, quotaProjectId: cachedQuotaProjectId || undefined, sub: 'free-tier', credits: cachedCredits };
     } catch (err) {
       log.error(`[fetchProjectId] onboardUser 失败: ${err.message}`);
-      return { projectId: undefined, sub: 'free-tier', credits: cachedCredits };
+      return { projectId: undefined, quotaProjectId: cachedQuotaProjectId || undefined, sub: 'free-tier', credits: cachedCredits };
     }
   }
 
@@ -146,13 +154,7 @@ class ProjectIdFetcher {
     log.info(`[loadCodeAssist] 请求: ${requestUrl}`);
     const response = await requesterManager.fetch(requestUrl, {
       method: 'POST',
-      headers: {
-        'Host': apiHost,
-        'User-Agent': config.api.userAgent,
-        'Authorization': `Bearer ${token.access_token}`,
-        'Content-Type': 'application/json',
-        'Accept-Encoding': 'gzip'
-      },
+      headers: buildAuthorizedHeaders(token, { host: apiHost }),
       body: requestBody,
       okStatus: [200]
     });
@@ -188,6 +190,7 @@ class ProjectIdFetcher {
       
       return {
         projectId,
+        quotaProjectId: token?.quotaProjectId || projectId,
         sub,
         isActivated: true,
         credits
@@ -240,13 +243,7 @@ class ProjectIdFetcher {
 
       const response = await requesterManager.fetch(requestUrl, {
         method: 'POST',
-        headers: {
-          'Host': apiHost,
-          'User-Agent': config.api.userAgent,
-          'Authorization': `Bearer ${token.access_token}`,
-          'Content-Type': 'application/json',
-          'Accept-Encoding': 'gzip'
-        },
+        headers: buildAuthorizedHeaders(token, { host: apiHost }),
         body: requestBody,
         okStatus: [200]
       });
@@ -269,7 +266,11 @@ class ProjectIdFetcher {
 
         if (projectId) {
           log.info(`[onboardUser] 成功获取 projectId: ${projectId}`);
-          return { projectId, sub };
+          return {
+            projectId,
+            quotaProjectId: token?.quotaProjectId || projectId,
+            sub
+          };
         }
         log.warn('[onboardUser] 操作完成但响应中无 projectId');
         return null;
@@ -305,13 +306,7 @@ class ProjectIdFetcher {
     try {
       const response = await requesterManager.fetch(requestUrl, {
         method: 'POST',
-        headers: {
-          'Host': apiHost,
-          'User-Agent': config.api.userAgent,
-          'Authorization': `Bearer ${token.access_token}`,
-          'Content-Type': 'application/json',
-          'Accept-Encoding': 'gzip'
-        },
+        headers: buildAuthorizedHeaders(token, { host: apiHost }),
         body: requestBody,
         okStatus: [200]
       });

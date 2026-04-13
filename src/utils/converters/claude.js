@@ -1,5 +1,6 @@
 // Claude 格式转换工具
 import config from '../../config/config.js';
+import { getToolCallSignature } from '../thoughtSignatureCache.js';
 import { convertClaudeToolsToAntigravity } from '../toolConverter.js';
 import {
   getSignatureContext,
@@ -64,7 +65,12 @@ function handleClaudeAssistantMessage(message, antigravityMessages, enableThinki
         if (!messageSignature && item.signature) messageSignature = item.signature;
       } else if (item.type === 'tool_use') {
         const safeName = processToolName(item.name, sessionId, actualModelName);
-        const signature = enableThinking ? (item.signature || toolSignature || reasoningSignature) : null;
+        const cachedToolCallSignature = item.id
+          ? getToolCallSignature(sessionId, actualModelName, item.id)
+          : null;
+        const signature = enableThinking
+          ? (item.signature || cachedToolCallSignature?.signature || toolSignature || reasoningSignature)
+          : null;
         toolCalls.push(createFunctionCallPart(item.id, safeName, JSON.stringify(item.input || {}), signature));
       }
     }

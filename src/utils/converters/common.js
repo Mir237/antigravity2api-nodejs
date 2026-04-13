@@ -1,8 +1,9 @@
 // 转换器公共模块
 import config from '../../config/config.js';
-import { generateRequestId } from '../idGenerator.js';
 import { getSignature, shouldCacheSignature, isImageModel } from '../thoughtSignatureCache.js';
 import { setToolNameMapping } from '../toolNameCache.js';
+import { normalizeToolProtocol } from '../toolProtocolIntegrity.js';
+import { buildAgentRequestIdentity } from '../requestIdentity.js';
 import { getThoughtSignatureForModel, getToolSignatureForModel, sanitizeToolName, modelMapping, isEnableThinking, generateGenerationConfig } from '../utils.js';
 
 /**
@@ -193,14 +194,16 @@ export function pushModelMessage({ parts, toolCalls, hasContent }, antigravityMe
  */
 export function buildRequestBody({ contents, tools, generationConfig, sessionId, systemInstruction, useCredits }, token, actualModelName) {
   const hasTools = tools && tools.length > 0;
+  const normalizedContents = normalizeToolProtocol(contents);
+  const identity = buildAgentRequestIdentity(token, sessionId);
 
   const requestBody = {
     project: token.projectId,
-    requestId: generateRequestId(),
+    requestId: identity.requestId,
     request: {
-      contents,
+      contents: normalizedContents,
       generationConfig,
-      sessionId
+      sessionId: identity.sessionId
     },
     model: actualModelName,
     userAgent: 'antigravity',

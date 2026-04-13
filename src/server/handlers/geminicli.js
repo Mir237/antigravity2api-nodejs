@@ -30,7 +30,7 @@ import {
   endStream,
   with429Retry
 } from '../stream.js';
-import { setSignature, getSignature, shouldCacheSignature, isImageModel } from '../../utils/thoughtSignatureCache.js';
+import { setSignature, setToolCallSignature, getSignature, shouldCacheSignature, isImageModel } from '../../utils/thoughtSignatureCache.js';
 import { getSafeRetries } from './common/retry.js';
 import { disableTimeouts } from './common/timeouts.js';
 
@@ -122,6 +122,16 @@ export const handleGeminiCliRequest = async (req, res, forceFormat = null) => {
           const isImage = isImageModel(actualModel);
           if (shouldCacheSignature({ hasTools, isImageModel: isImage })) {
             setSignature(null, actualModel, reasoningSignature, reasoningContent || ' ', { hasTools, isImageModel: isImage });
+            if (hasTools) {
+              for (const toolCall of toolCalls) {
+                if (toolCall?.id && toolCall?.thoughtSignature) {
+                  setToolCallSignature(null, actualModel, toolCall.id, toolCall.thoughtSignature, reasoningContent || ' ', {
+                    hasTools: true,
+                    isImageModel: isImage
+                  });
+                }
+              }
+            }
           }
         }
 
@@ -183,6 +193,16 @@ export const handleGeminiCliRequest = async (req, res, forceFormat = null) => {
       if (finalReasoningSignature && actualModel) {
         if (shouldCacheSignature({ hasTools, isImageModel: isImage })) {
           setSignature(null, actualModel, finalReasoningSignature, finalReasoningContent || ' ', { hasTools, isImageModel: isImage });
+          if (hasTools) {
+            for (const toolCall of toolCalls) {
+              if (toolCall?.id && toolCall?.thoughtSignature) {
+                setToolCallSignature(null, actualModel, toolCall.id, toolCall.thoughtSignature, finalReasoningContent || ' ', {
+                  hasTools: true,
+                  isImageModel: isImage
+                });
+              }
+            }
+          }
         }
       }
 

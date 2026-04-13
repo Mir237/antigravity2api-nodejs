@@ -1,9 +1,11 @@
 // Gemini 格式转换工具
 import config from '../../config/config.js';
-import { generateRequestId } from '../idGenerator.js';
 import { convertGeminiToolsToAntigravity } from '../toolConverter.js';
 import { getSignatureContext, createThoughtPart, modelMapping, isEnableThinking, buildSystemInstruction } from './common.js';
 import { normalizeGeminiParameters, toGenerationConfig } from '../parameterNormalizer.js';
+import { getToolCallSignature } from '../thoughtSignatureCache.js';
+import { normalizeToolProtocol } from '../toolProtocolIntegrity.js';
+import { buildAgentRequestIdentity } from '../requestIdentity.js';
 
 /**
  * 为 functionCall 生成唯一 ID
@@ -51,7 +53,7 @@ function processFunctionCallIds(contents) {
 /**
  * 处理 model 消息中的 thought 和签名
  */
-function processModelThoughts(content, reasoningSignature, reasoningContent, toolSignature, toolContent, enableThinking) {
+function processModelThoughts(content, reasoningSignature, reasoningContent, toolSignature, toolContent, enableThinking, sessionId, actualModelName) {
   const parts = content.parts;
   const fallbackSig = reasoningSignature || toolSignature;
   const fallbackContent = (fallbackSig === reasoningSignature) ? (reasoningContent || ' ') : (toolContent || ' ');
@@ -118,6 +120,14 @@ function processModelThoughts(content, reasoningSignature, reasoningContent, too
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i];
     if ((!part.thoughtSignature) && (part.functionCall || part.inlineData)) {
+      if (part.functionCall?.id) {
+        const cachedToolCallSignature = getToolCallSignature(sessionId, actualModelName, part.functionCall.id);
+        if (cachedToolCallSignature?.signature) {
+          part.thoughtSignature = cachedToolCallSignature.signature;
+          continue;
+        }
+      }
+
       if (sigIndex < standaloneSignatures.length) {
         part.thoughtSignature = standaloneSignatures[sigIndex].signature;
         sigIndex++;
@@ -142,6 +152,7 @@ export function generateGeminiRequestBody(geminiBody, modelName, token) {
   const enableThinking = isEnableThinking(modelName);
   const actualModelName = modelMapping(modelName);
   const request = JSON.parse(JSON.stringify(geminiBody));
+  const identity = buildAgentRequestIdentity(token, token.sessionId);
 
   if (request.contents && Array.isArray(request.contents)) {
     processFunctionCallIds(request.contents);
@@ -156,9 +167,20 @@ export function generateGeminiRequestBody(geminiBody, modelName, token) {
 
     request.contents.forEach(content => {
       if (content.role === 'model' && content.parts && Array.isArray(content.parts)) {
-        processModelThoughts(content, reasoningSignature, reasoningContent, toolSignature, toolContent, enableThinking);
+        processModelThoughts(
+          content,
+          reasoningSignature,
+          reasoningContent,
+          toolSignature,
+          toolContent,
+          enableThinking,
+          token.sessionId,
+          actualModelName
+        );
       }
     });
+
+    request.contents = normalizeToolProtocol(request.contents);
   }
 
   // 使用统一参数规范化模块处理 Gemini 格式参数
@@ -166,7 +188,7 @@ export function generateGeminiRequestBody(geminiBody, modelName, token) {
 
   // 转换为 generationConfig 格式
   request.generationConfig = toGenerationConfig(normalizedParams, enableThinking, actualModelName);
-  request.sessionId = token.sessionId;
+  request.sessionId = identity.sessionId;
   delete request.safetySettings;
 
   // 添加工具配置
@@ -187,7 +209,7 @@ export function generateGeminiRequestBody(geminiBody, modelName, token) {
 
   const requestBody = {
     project: token.projectId,
-    requestId: generateRequestId(),
+    requestId: identity.requestId,
     request: request,
     model: actualModelName,
     userAgent: 'antigravity',

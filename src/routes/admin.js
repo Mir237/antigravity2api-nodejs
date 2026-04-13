@@ -150,7 +150,7 @@ router.get('/tokens', cookieAuthMiddleware, async (req, res) => {
 });
 
 router.post('/tokens', cookieAuthMiddleware, async (req, res) => {
-  const { access_token, refresh_token, expires_in, timestamp, enable, projectId, email, sub, credits } = req.body;
+  const { access_token, refresh_token, expires_in, timestamp, enable, projectId, quotaProjectId, email, sub, credits } = req.body;
   if (!access_token || !refresh_token) {
     return res.status(400).json({ success: false, message: 'access_token和refresh_token必填' });
   }
@@ -158,6 +158,7 @@ router.post('/tokens', cookieAuthMiddleware, async (req, res) => {
   if (timestamp) tokenData.timestamp = timestamp;
   if (enable !== undefined) tokenData.enable = enable;
   if (projectId) tokenData.projectId = projectId;
+  if (quotaProjectId) tokenData.quotaProjectId = quotaProjectId;
   if (email) tokenData.email = email;
   if (credits !== null && credits !== undefined) tokenData.credits = credits;
 
@@ -303,6 +304,7 @@ router.post('/tokens/export', cookieAuthMiddleware, async (req, res) => {
         timestamp: token.timestamp,
         enable: token.enable,
         projectId: token.projectId,
+        quotaProjectId: token.quotaProjectId || token.projectId || null,
         email: token.email,
         hasQuota: token.hasQuota
       }))
@@ -345,6 +347,17 @@ function normalizeImportedProjectId(value) {
     return normalizeImportedProjectId(value.id ?? value.projectId ?? value.name);
   }
   return normalizeImportedTextValue(value);
+}
+
+function normalizeImportedQuotaProjectId(rawToken) {
+  return normalizeImportedProjectId(
+    rawToken?.quotaProjectId ??
+    rawToken?.quota_project_id ??
+    rawToken?.quotaProject ??
+    rawToken?.quota_project ??
+    findFieldByKeyword(rawToken, 'quota_project') ??
+    findFieldByKeyword(rawToken, 'quota')
+  );
 }
 
 function normalizeImportedBoolean(value) {
@@ -416,6 +429,7 @@ function smartParseToken(rawToken) {
   const token = { refresh_token };
 
   const projectId = normalizeImportedProjectId(findFieldByKeyword(rawToken, 'project'));
+  const quotaProjectId = normalizeImportedQuotaProjectId(rawToken);
   const access_token = normalizeImportedTextValue(findFieldByKeyword(rawToken, 'access') || rawToken.token);
   const email = normalizeImportedTextValue(findFieldByKeyword(rawToken, 'email') || findFieldByKeyword(rawToken, 'mail'));
   const expires_in = findFieldByKeyword(rawToken, 'expires') || findFieldByKeyword(rawToken, 'expire');
@@ -426,6 +440,7 @@ function smartParseToken(rawToken) {
   const credits = findFieldByKeyword(rawToken, 'credit');
 
   if (projectId) token.projectId = projectId;
+  if (quotaProjectId) token.quotaProjectId = quotaProjectId;
   if (access_token) token.access_token = access_token;
   if (email) token.email = email;
 
@@ -535,10 +550,12 @@ function smartParseGeminiCliToken(rawToken) {
   const timestamp = findFieldByKeyword(rawToken, 'time') || findFieldByKeyword(rawToken, 'stamp') || findFieldByKeyword(rawToken, 'created');
   const expiry = findFieldByKeyword(rawToken, 'expiry') || findFieldByKeyword(rawToken, 'expiresat');
   const projectId = findFieldByKeyword(rawToken, 'project');
+  const quotaProjectId = normalizeImportedQuotaProjectId(rawToken);
 
   if (access_token) token.access_token = access_token;
   if (email) token.email = email;
   if (projectId) token.projectId = projectId;
+  if (quotaProjectId) token.quotaProjectId = quotaProjectId;
 
   const derived = deriveExpiresInAndTimestamp({ expires_in, expiry, timestamp });
   token.expires_in = derived.expires_in;
@@ -805,7 +822,7 @@ router.get('/geminicli/tokens', cookieAuthMiddleware, async (req, res) => {
 
 // 添加 Gemini CLI Token
 router.post('/geminicli/tokens', cookieAuthMiddleware, async (req, res) => {
-  const { access_token, refresh_token, expires_in, timestamp, enable, email } = req.body;
+  const { access_token, refresh_token, expires_in, timestamp, enable, email, projectId, quotaProjectId } = req.body;
   if (!access_token || !refresh_token) {
     return res.status(400).json({ success: false, message: 'access_token和refresh_token必填' });
   }
@@ -813,6 +830,8 @@ router.post('/geminicli/tokens', cookieAuthMiddleware, async (req, res) => {
   if (timestamp) tokenData.timestamp = timestamp;
   if (enable !== undefined) tokenData.enable = enable;
   if (email) tokenData.email = email;
+  if (projectId) tokenData.projectId = projectId;
+  if (quotaProjectId) tokenData.quotaProjectId = quotaProjectId;
 
   try {
     const result = await geminicliTokenManager.addToken(tokenData);
@@ -918,7 +937,8 @@ router.post('/geminicli/tokens/export', cookieAuthMiddleware, async (req, res) =
         timestamp: token.timestamp,
         enable: token.enable,
         email: token.email,
-        projectId: token.projectId
+        projectId: token.projectId,
+        quotaProjectId: token.quotaProjectId || token.projectId || null
       }))
     };
 

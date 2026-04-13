@@ -13,12 +13,11 @@ import { buildClientRegister, buildFrontEnd, buildClientFeatrueHeaders, buildCli
 import { MODEL_LIST_CACHE_TTL, QA_PAIRS } from '../constants/index.js';
 import { createApiError } from '../utils/errors.js';
 import { generateCheckpointBody } from '../utils/checkPoint.js';
-import axios from 'axios';
 import {
   convertToToolCall,
   registerStreamMemoryCleanup
 } from './stream_parser.js';
-import { setSignature, shouldCacheSignature, isImageModel } from '../utils/thoughtSignatureCache.js';
+import { setSignature, setToolCallSignature, shouldCacheSignature, isImageModel } from '../utils/thoughtSignatureCache.js';
 import {
   isDebugDumpEnabled,
   createDumpId,
@@ -32,6 +31,7 @@ import { getUpstreamStatus, readUpstreamErrorBody, isCallerDoesNotHavePermission
 import { createStreamLineProcessor } from './streamLineProcessor.js';
 import { runSseStream, postJsonAndParse } from './geminiTransport.js';
 import { parseGeminiCandidateParts, toOpenAIUsage } from './geminiResponseParser.js';
+import { buildAuthorizedHeaders } from '../utils/googleAuth.js';
 
 // ==================== Token 计时器管理 ====================
 const tokenTimers = new Map(); // { tokenKey: { lastUsed: timestamp, intervalId: intervalId } }
@@ -143,14 +143,10 @@ registerMemoryCleanup();
 // ==================== 辅助函数 ====================
 
 function buildHeaders(token, hostOverride = null) {
-  return {
-    'Host': hostOverride || config.api.host,
-    'User-Agent': config.api.userAgent,
-    'Transfer-Encoding': 'chunked',
-    'Authorization': `Bearer ${token.access_token}`,
-    'Content-Type': 'application/json',
-    'Accept-Encoding': 'gzip'
-  };
+  return buildAuthorizedHeaders(token, {
+    host: hostOverride || config.api.host,
+    transferEncoding: 'chunked'
+  });
 }
 
 // ==================== 上游 baseURL Fallback ====================
@@ -476,6 +472,16 @@ export async function generateAssistantResponseNoStream(requestBody, token) {
     if (finalSignature) {
       const cachedContent = parsed.reasoningContent || ' ';
       setSignature(sessionId, model, finalSignature, cachedContent, { hasTools, isImageModel: isImage });
+      if (hasTools) {
+        for (const toolCall of parsed.toolCalls) {
+          if (toolCall?.id && toolCall?.thoughtSignature) {
+            setToolCallSignature(sessionId, model, toolCall.id, toolCall.thoughtSignature, cachedContent, {
+              hasTools: true,
+              isImageModel: isImage
+            });
+          }
+        }
+      }
     }
   }
 

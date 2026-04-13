@@ -10,9 +10,11 @@
  */
 
 import config from '../../config/config.js';
+import { getToolCallSignature } from '../thoughtSignatureCache.js';
 import { convertClaudeToolsToAntigravity, convertGeminiToolsToAntigravity } from '../toolConverter.js';
 import { sanitizeToolName, cleanParameters, modelMapping, isEnableThinking } from '../utils.js';
 import { normalizeOpenAIParameters, normalizeClaudeParameters, normalizeGeminiParameters, toGenerationConfig } from '../parameterNormalizer.js';
+import { normalizeToolProtocol } from '../toolProtocolIntegrity.js';
 import {
   getSignatureContext,
   createThoughtPart,
@@ -285,7 +287,10 @@ function convertMessages(messages, enableThinking = false, actualModelName = '',
             
             const safeName = processToolName(func.name, null, actualModelName);
             // 工具调用始终需要签名（无论是否启用思考模式）
-            const signature = toolSignature || reasoningSignature || SKIP_THOUGHT_SIGNATURE_VALIDATOR;
+            const cachedToolCallSignature = toolCall.id
+              ? getToolCallSignature(null, actualModelName, toolCall.id)
+              : null;
+            const signature = cachedToolCallSignature?.signature || toolSignature || reasoningSignature || SKIP_THOUGHT_SIGNATURE_VALIDATOR;
             parts.push(createFunctionCallPart(toolCall.id, safeName, args, signature));
           }
         }
@@ -446,6 +451,7 @@ export function convertOpenAIToGeminiCli(openaiRequest) {
     actualModelName, 
     hasTools
   );
+  const normalizedContents = normalizeToolProtocol(contents);
   
   // 规范化参数
   const normalizedParams = normalizeOpenAIParameters({
@@ -460,7 +466,7 @@ export function convertOpenAIToGeminiCli(openaiRequest) {
   
   // 构建 Gemini CLI 请求体
   const geminiRequest = {
-    contents,
+    contents: normalizedContents,
     generationConfig
   };
   
@@ -506,7 +512,7 @@ export function convertOpenAIToGeminiCli(openaiRequest) {
  * @param {string} toolContent - 工具内容
  * @param {boolean} enableThinking - 是否启用思考模式
  */
-function processGeminiModelThoughts(content, reasoningSignature, reasoningContent, toolSignature, toolContent, enableThinking) {
+function processGeminiModelThoughts(content, reasoningSignature, reasoningContent, toolSignature, toolContent, enableThinking, actualModelName) {
   const parts = content.parts;
   const fallbackSig = reasoningSignature || toolSignature;
   const fallbackContent = (fallbackSig === reasoningSignature) ? (reasoningContent || ' ') : (toolContent || ' ');
@@ -572,6 +578,14 @@ function processGeminiModelThoughts(content, reasoningSignature, reasoningConten
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i];
     if ((!part.thoughtSignature) && (part.functionCall || part.inlineData)) {
+      if (part.functionCall?.id) {
+        const cachedToolCallSignature = getToolCallSignature(null, actualModelName, part.functionCall.id);
+        if (cachedToolCallSignature?.signature) {
+          part.thoughtSignature = cachedToolCallSignature.signature;
+          continue;
+        }
+      }
+
       if (sigIndex < standaloneSignatures.length) {
         part.thoughtSignature = standaloneSignatures[sigIndex].signature;
         sigIndex++;
@@ -635,9 +649,20 @@ export function convertGeminiToGeminiCli(geminiRequest, modelName) {
     
     for (const content of request.contents) {
       if (content.role === 'model' && content.parts && Array.isArray(content.parts)) {
-        processGeminiModelThoughts(content, reasoningSignature, reasoningContent, toolSignature, toolContent, enableThinking);
+        processGeminiModelThoughts(
+          content,
+          reasoningSignature,
+          reasoningContent,
+          toolSignature,
+          toolContent,
+          enableThinking,
+          actualModelName
+        );
       }
     }
+  }
+  if (request.contents && Array.isArray(request.contents)) {
+    request.contents = normalizeToolProtocol(request.contents);
   }
   // 规范化 generationConfig
   if (request.generationConfig) {
@@ -842,7 +867,10 @@ function convertClaudeMessages(messages, enableThinking = false, actualModelName
           } else if (item.type === 'tool_use') {
             const safeName = processToolName(item.name, null, actualModelName);
             // 工具调用始终需要签名（无论是否启用思考模式）
-            const signature = item.signature || toolSignature || reasoningSignature || SKIP_THOUGHT_SIGNATURE_VALIDATOR;
+            const cachedToolCallSignature = item.id
+              ? getToolCallSignature(null, actualModelName, item.id)
+              : null;
+            const signature = item.signature || cachedToolCallSignature?.signature || toolSignature || reasoningSignature || SKIP_THOUGHT_SIGNATURE_VALIDATOR;
             toolCalls.push(createFunctionCallPart(item.id, safeName, item.input || {}, signature));
           }
         }
@@ -926,6 +954,7 @@ export function convertClaudeToGeminiCli(claudeRequest) {
   
   // 转换消息
   const contents = convertClaudeMessages(messages || [], enableThinking, actualModelName, hasTools);
+  const normalizedContents = normalizeToolProtocol(contents);
   
   // 规范化参数
   const normalizedParams = normalizeClaudeParameters({
@@ -941,7 +970,7 @@ export function convertClaudeToGeminiCli(claudeRequest) {
   
   // 构建 Gemini CLI 请求体
   const geminiRequest = {
-    contents,
+    contents: normalizedContents,
     generationConfig
   };
   

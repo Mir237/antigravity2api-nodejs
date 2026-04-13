@@ -37,6 +37,15 @@ class LineBuffer {
     this.buffer = '';
     this.lines.length = 0;
   }
+
+  flushRemainder() {
+    if (!this.buffer) {
+      return null;
+    }
+    const remainder = this.buffer;
+    this.buffer = '';
+    return remainder;
+  }
 }
 
 // LineBuffer 对象池

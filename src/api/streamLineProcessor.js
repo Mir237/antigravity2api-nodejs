@@ -17,6 +17,10 @@ export function createStreamLineProcessor({ state, onEvent, onRawChunk } = {}) {
   };
 
   const close = () => {
+    const remainder = lineBuffer.flushRemainder?.();
+    if (remainder) {
+      parseAndEmitStreamChunk(remainder, state, onEvent);
+    }
     releaseLineBuffer(lineBuffer);
   };
 

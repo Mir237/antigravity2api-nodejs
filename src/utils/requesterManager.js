@@ -3,8 +3,10 @@ import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
 import axios from 'axios';
 import fingerprintRequester from '../requester.js';
+import goCloudCodeRequester from './goCloudCodeRequester.js';
 import config from '../config/config.js';
 import logger from './logger.js';
+import { isCloudCodeUrl } from './cloudCodeTransport.js';
 import { buildAxiosRequestConfig } from './httpClient.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -15,12 +17,17 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * - 根据 config.useNativeAxios 决定使用 TLS 指纹请求器还是 axios
  * - 支持热重载：调用 reload() 后下次请求时重新初始化
  * - TLS 请求器初始化失败时自动降级到 axios
- * - sendLog 等需要发送二进制 body 的场景，请直接使用 axios（TLS 请求器暂不支持二进制 body）
+ * - Google 请求在 go 模式下优先统一进入 Go worker；TLS 指纹链仅作 fallback
+ * - 指纹请求器仍不支持二进制 body，这类请求会在 TLS fallback 时继续降级到 axios
  */
 class RequesterManager {
   constructor() {
     this._tlsRequester = null;
-    this._tlsInitFailed = false;
+    this._cloudCodeTlsRequester = null;
+    this._goCloudCodeRequester = null;
+    this._generalTlsInitFailed = false;
+    this._cloudCodeTlsInitFailed = false;
+    this._goCloudCodeInitFailed = false;
     this._initPromise = null;
   }
 
@@ -34,31 +41,73 @@ class RequesterManager {
 
   async _doInit() {
     if (config.useNativeAxios === true) {
-      this._tlsInitFailed = true;
+      this._generalTlsInitFailed = true;
+      this._cloudCodeTlsInitFailed = true;
+      this._goCloudCodeInitFailed = true;
       logger.info('[RequesterManager] 使用原生 axios 请求');
       return;
     }
 
-    try {
-      const isPkg = typeof process.pkg !== 'undefined';
-      const configPath = isPkg
-        ? path.join(path.dirname(process.execPath), 'bin', 'tls_config.json')
-        : path.join(__dirname, '..', 'bin', 'tls_config.json');
+    await this._initGeneralTlsRequester();
+    await this._initCloudCodeTlsRequester();
+    await this._initGoCloudCodeRequester();
+  }
 
-      const requester = fingerprintRequester.create({
-        configPath,
-        timeout: config.timeout ? Math.ceil(config.timeout / 1000) : 30,
+  _getConfigPath(filename) {
+    const isPkg = typeof process.pkg !== 'undefined';
+    return isPkg
+      ? path.join(path.dirname(process.execPath), 'bin', filename)
+      : path.join(__dirname, '..', 'bin', filename);
+  }
+
+  _createFingerprintRequester(configFilename) {
+    return fingerprintRequester.create({
+      configPath: this._getConfigPath(configFilename),
+      timeout: config.timeout ? Math.ceil(config.timeout / 1000) : 30,
+      proxy: config.proxy || null,
+    });
+  }
+
+  async _initGeneralTlsRequester() {
+    try {
+      const requester = this._createFingerprintRequester('tls_config.json');
+      await this._probeBinary(requester.binaryPath);
+      this._tlsRequester = requester;
+      logger.info('[RequesterManager] 使用 FingerprintRequester（通用 TLS 指纹）请求');
+    } catch (error) {
+      logger.warn('[RequesterManager] 通用 FingerprintRequester 初始化失败，自动降级使用 axios:', error.message);
+      this._generalTlsInitFailed = true;
+    }
+  }
+
+  async _initCloudCodeTlsRequester() {
+    try {
+      const requester = this._createFingerprintRequester('cloudcode_tls_config.json');
+      await this._probeBinary(requester.binaryPath);
+      this._cloudCodeTlsRequester = requester;
+      logger.info('[RequesterManager] 使用 FingerprintRequester（Cloud Code TLS 指纹）请求');
+    } catch (error) {
+      logger.warn('[RequesterManager] Cloud Code FingerprintRequester 初始化失败，将回退到通用 TLS 指纹或 axios:', error.message);
+      this._cloudCodeTlsInitFailed = true;
+    }
+  }
+
+  async _initGoCloudCodeRequester() {
+    if (config.cloudCodeTransport !== 'go') {
+      return;
+    }
+
+    try {
+      const requester = goCloudCodeRequester.create({
+        timeoutMs: config.timeout,
         proxy: config.proxy || null,
       });
-
-      // 主动探测二进制文件是否可执行（捕获架构不匹配、文件损坏等运行时错误）
-      await this._probeBinary(requester.binaryPath);
-
-      this._tlsRequester = requester;
-      logger.info('[RequesterManager] 使用 FingerprintRequester（TLS 指纹）请求');
+      await requester.init();
+      this._goCloudCodeRequester = requester;
+      logger.info('[RequesterManager] 使用 Go Google HTTP/2 请求');
     } catch (error) {
-      logger.warn('[RequesterManager] FingerprintRequester 初始化失败，自动降级使用 axios:', error.message);
-      this._tlsInitFailed = true;
+      logger.warn('[RequesterManager] Go Google HTTP/2 初始化失败，将回退到指纹请求器:', error.message);
+      this._goCloudCodeInitFailed = true;
     }
   }
 
@@ -87,7 +136,61 @@ class RequesterManager {
   }
 
   get _useAxios() {
-    return this._tlsInitFailed || !this._tlsRequester;
+    return this._generalTlsInitFailed || !this._tlsRequester;
+  }
+
+  _isGoogleApiUrl(url) {
+    if (!url || typeof url !== 'string') {
+      return false;
+    }
+    try {
+      const hostname = new URL(url).hostname.toLowerCase();
+      return hostname === 'googleapis.com' || hostname.endsWith('.googleapis.com');
+    } catch {
+      return false;
+    }
+  }
+
+  _getPreferredCloudCodeProfile() {
+    return config.cloudCodeTransport === 'go' ? 'cloudcode-go' : 'cloudcode';
+  }
+
+  _getRoute(url) {
+    const isCloudCodeRequest = isCloudCodeUrl(url);
+    const isGoogleApiRequest = this._isGoogleApiUrl(url);
+
+    if (isCloudCodeRequest && config.cloudCodeTransport === 'go' && this._goCloudCodeRequester) {
+      return { isCloudCodeRequest, isGoogleApiRequest, requester: this._goCloudCodeRequester, profile: 'cloudcode-go', kind: 'go' };
+    }
+
+    if (!isCloudCodeRequest && isGoogleApiRequest && config.cloudCodeTransport === 'go' && this._goCloudCodeRequester) {
+      return { isCloudCodeRequest, isGoogleApiRequest, requester: this._goCloudCodeRequester, profile: 'google-go', kind: 'go' };
+    }
+
+    if (isCloudCodeRequest && this._cloudCodeTlsRequester) {
+      return { isCloudCodeRequest, isGoogleApiRequest, requester: this._cloudCodeTlsRequester, profile: 'cloudcode', kind: 'tls' };
+    }
+
+    if (this._tlsRequester) {
+      return { isCloudCodeRequest, isGoogleApiRequest, requester: this._tlsRequester, profile: 'general', kind: 'tls' };
+    }
+
+    return { isCloudCodeRequest, isGoogleApiRequest, requester: null, profile: 'axios', kind: 'axios' };
+  }
+
+  _getHostForLog(url) {
+    try {
+      return new URL(url).host;
+    } catch {
+      return 'invalid-url';
+    }
+  }
+
+  _logRouteSelection(url, profile, isStream) {
+    const host = this._getHostForLog(url);
+    const mode = isStream ? 'stream' : 'request';
+    const transport = profile === 'axios' ? 'axios' : (profile === 'cloudcode-go' || profile === 'google-go') ? 'go-http2' : 'tls';
+    logger.info(`[RequesterManager] ${mode} route=${profile} transport=${transport} host=${host}`);
   }
 
   /**
@@ -97,8 +200,18 @@ class RequesterManager {
     if (this._tlsRequester) {
       try { this._tlsRequester.close(); } catch { /* ignore */ }
     }
+    if (this._cloudCodeTlsRequester) {
+      try { this._cloudCodeTlsRequester.close(); } catch { /* ignore */ }
+    }
+    if (this._goCloudCodeRequester) {
+      try { this._goCloudCodeRequester.close(); } catch { /* ignore */ }
+    }
     this._tlsRequester = null;
-    this._tlsInitFailed = false;
+    this._cloudCodeTlsRequester = null;
+    this._goCloudCodeRequester = null;
+    this._generalTlsInitFailed = false;
+    this._cloudCodeTlsInitFailed = false;
+    this._goCloudCodeInitFailed = false;
     this._initPromise = null;
     logger.info('[RequesterManager] 请求器已重置，将在下次请求时按新配置重新初始化');
   }
@@ -109,6 +222,12 @@ class RequesterManager {
   close() {
     if (this._tlsRequester) {
       try { this._tlsRequester.close(); } catch { /* ignore */ }
+    }
+    if (this._cloudCodeTlsRequester) {
+      try { this._cloudCodeTlsRequester.close(); } catch { /* ignore */ }
+    }
+    if (this._goCloudCodeRequester) {
+      try { this._goCloudCodeRequester.close(); } catch { /* ignore */ }
     }
   }
 
@@ -121,7 +240,7 @@ class RequesterManager {
    * @param {object} options
    * @param {string}  [options.method='POST']
    * @param {object}  [options.headers={}]
-   * @param {*}       [options.body=null]  - JSON 对象或字符串；二进制 body 请直接使用 axios
+   * @param {*}       [options.body=null]  - JSON 对象、字符串或二进制 body
    * @param {number[]} [options.okStatus]  - 认为成功的状态码列表，默认 [200]
    * @returns {Promise<{ status: number, data: any }>}
    *   data 为解析后的 JSON 对象（axios 路径）或原始文本（解析失败时）
@@ -129,10 +248,49 @@ class RequesterManager {
   async fetch(url, { method = 'POST', headers = {}, body = null, okStatus = [200] } = {}) {
     await this._ensureInit();
 
-    if (this._useAxios) {
+    const route = this._getRoute(url);
+    const { isCloudCodeRequest, isGoogleApiRequest, requester, profile, kind } = route;
+    const preferredProfile = this._getPreferredCloudCodeProfile();
+    const isBinaryBody = this._isBinaryBody(body);
+
+    if (isCloudCodeRequest && kind === 'axios' && config.allowUnfingerprintedCloudCodeFallback !== true) {
+      throw new Error('Cloud Code TLS 指纹传输不可用：TLS 指纹请求器不可用，已阻止降级到无指纹 axios');
+    }
+
+    if (isCloudCodeRequest && preferredProfile === 'cloudcode-go' && profile === 'cloudcode') {
+      logger.warn('[RequesterManager] Go Cloud Code HTTP/2 不可用，已回退到 Cloud Code TLS 指纹');
+    }
+
+    if (isCloudCodeRequest && preferredProfile === 'cloudcode-go' && profile === 'general') {
+      logger.warn('[RequesterManager] Go Cloud Code HTTP/2 与 Cloud Code TLS 指纹均不可用，已回退到通用 TLS 指纹');
+    }
+
+    if (isCloudCodeRequest && preferredProfile === 'cloudcode' && profile === 'general') {
+      logger.warn('[RequesterManager] Cloud Code 专用 TLS 指纹不可用，已回退到通用 TLS 指纹');
+    }
+
+    if (isCloudCodeRequest && profile === 'axios') {
+      logger.warn('[RequesterManager] Cloud Code TLS 指纹请求器不可用，已回退到 axios 无指纹路径');
+    }
+
+    if (!isCloudCodeRequest && isGoogleApiRequest && config.cloudCodeTransport === 'go' && profile === 'general') {
+      logger.warn('[RequesterManager] Go Google HTTP/2 不可用，已回退到通用 TLS 指纹');
+    }
+
+    this._logRouteSelection(url, kind === 'tls' && isBinaryBody ? 'axios' : profile, false);
+
+    if (kind === 'tls' && isBinaryBody) {
+      logger.warn('[RequesterManager] TLS 指纹请求器不支持二进制 body，已回退到 axios');
       return this._axiosFetch(url, { method, headers, body, okStatus });
     }
-    return this._tlsFetch(url, { method, headers, body, okStatus });
+
+    if (kind === 'axios') {
+      return this._axiosFetch(url, { method, headers, body, okStatus });
+    }
+    if (kind === 'go') {
+      return this._goFetch(requester, url, { method, headers, body, okStatus });
+    }
+    return this._tlsFetch(requester, url, { method, headers, body, okStatus });
   }
 
   /**
@@ -149,17 +307,50 @@ class RequesterManager {
   async fetchStream(url, { method = 'POST', headers = {}, body = null } = {}) {
     await this._ensureInit();
 
-    if (this._useAxios) {
+    const route = this._getRoute(url);
+    const { isCloudCodeRequest, isGoogleApiRequest, requester, profile, kind } = route;
+    const preferredProfile = this._getPreferredCloudCodeProfile();
+
+    if (isCloudCodeRequest && kind === 'axios' && config.allowUnfingerprintedCloudCodeFallback !== true) {
+      throw new Error('Cloud Code TLS 指纹传输不可用：TLS 指纹请求器不可用，已阻止降级到无指纹 axios');
+    }
+
+    if (isCloudCodeRequest && preferredProfile === 'cloudcode-go' && profile === 'cloudcode') {
+      logger.warn('[RequesterManager] Go Cloud Code HTTP/2 不可用，流请求已回退到 Cloud Code TLS 指纹');
+    }
+
+    if (isCloudCodeRequest && preferredProfile === 'cloudcode-go' && profile === 'general') {
+      logger.warn('[RequesterManager] Go Cloud Code HTTP/2 与 Cloud Code TLS 指纹均不可用，流请求已回退到通用 TLS 指纹');
+    }
+
+    if (isCloudCodeRequest && preferredProfile === 'cloudcode' && profile === 'general') {
+      logger.warn('[RequesterManager] Cloud Code 专用 TLS 指纹不可用，流请求已回退到通用 TLS 指纹');
+    }
+
+    if (isCloudCodeRequest && profile === 'axios') {
+      logger.warn('[RequesterManager] Cloud Code TLS 指纹请求器不可用，流请求已回退到 axios 无指纹路径');
+    }
+
+    if (!isCloudCodeRequest && isGoogleApiRequest && config.cloudCodeTransport === 'go' && profile === 'general') {
+      logger.warn('[RequesterManager] Go Google HTTP/2 不可用，流请求已回退到通用 TLS 指纹');
+    }
+
+    this._logRouteSelection(url, profile, true);
+
+    if (kind === 'axios') {
       return this._axiosFetchStream(url, { method, headers, body });
     }
-    return this._tlsFetchStream(url, { method, headers, body });
+    if (kind === 'go') {
+      return this._goFetchStream(requester, url, { method, headers, body });
+    }
+    return this._tlsFetchStream(requester, url, { method, headers, body });
   }
 
   // ==================== TLS 路径 ====================
 
-  async _tlsFetch(url, { method, headers, body, okStatus }) {
+  async _tlsFetch(requester, url, { method, headers, body, okStatus }) {
     const reqConfig = this._buildTlsConfig(method, headers, body);
-    const response = await this._tlsRequester.antigravity_fetch(url, reqConfig);
+    const response = await requester.antigravity_fetch(url, reqConfig);
 
     if (!okStatus.includes(response.status)) {
       const errorBody = await response.text();
@@ -178,9 +369,35 @@ class RequesterManager {
     return { status: response.status, data };
   }
 
-  _tlsFetchStream(url, { method, headers, body }) {
+  async _goFetch(requester, url, { method, headers, body, okStatus }) {
     const reqConfig = this._buildTlsConfig(method, headers, body);
-    return this._tlsRequester.antigravity_fetchStream(url, reqConfig);
+    const response = await requester.antigravity_fetch(url, reqConfig);
+
+    if (!okStatus.includes(response.status)) {
+      const errorBody = await response.text();
+      throw { status: response.status, message: errorBody };
+    }
+
+    const text = await response.text();
+    let data = null;
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = text;
+      }
+    }
+    return { status: response.status, data };
+  }
+
+  _tlsFetchStream(requester, url, { method, headers, body }) {
+    const reqConfig = this._buildTlsConfig(method, headers, body);
+    return requester.antigravity_fetchStream(url, reqConfig);
+  }
+
+  _goFetchStream(requester, url, { method, headers, body }) {
+    const reqConfig = this._buildTlsConfig(method, headers, body);
+    return requester.antigravity_fetchStream(url, reqConfig);
   }
 
   _buildTlsConfig(method, headers, body) {
@@ -191,7 +408,7 @@ class RequesterManager {
       proxy: config.proxy || null,
     };
     if (body !== null) {
-      // Buffer / Uint8Array 直接传递（但 TLS 请求器目前不支持二进制 body，调用方应使用 axios）
+      // Go worker 支持二进制 body；TLS 指纹路径会在 fetch() 中先回退到 axios
       if (Buffer.isBuffer(body) || body instanceof Uint8Array) {
         reqConfig.body = body;
       } else {
@@ -199,6 +416,10 @@ class RequesterManager {
       }
     }
     return reqConfig;
+  }
+
+  _isBinaryBody(body) {
+    return Buffer.isBuffer(body) || body instanceof Uint8Array;
   }
 
   // ==================== axios 路径 ====================
@@ -305,3 +526,31 @@ class AxiosStreamResponse {
 // ==================== 单例导出 ====================
 
 export default new RequesterManager();
+
+export function getTlsConfigFilenameForUrl(url) {
+  return isCloudCodeUrl(url) ? 'cloudcode_tls_config.json' : 'tls_config.json';
+}
+
+export function getConfiguredCloudCodeRouteProfile(url, cloudCodeTransport = 'fingerprint') {
+  if (!isCloudCodeUrl(url)) {
+    return 'general';
+  }
+  return cloudCodeTransport === 'go' ? 'cloudcode-go' : 'cloudcode';
+}
+
+export function getConfiguredRouteProfile(url, cloudCodeTransport = 'fingerprint') {
+  if (isCloudCodeUrl(url)) {
+    return cloudCodeTransport === 'go' ? 'cloudcode-go' : 'cloudcode';
+  }
+
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    if (hostname === 'googleapis.com' || hostname.endsWith('.googleapis.com')) {
+      return cloudCodeTransport === 'go' ? 'google-go' : 'general';
+    }
+  } catch {
+    return 'general';
+  }
+
+  return 'general';
+}

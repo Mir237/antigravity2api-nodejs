@@ -560,21 +560,23 @@ export async function sendLog(token, num, trajectoryId, conversationId, messageI
   headers["Content-Type"] = "application/octet-stream";
   headers["Accept-Encoding"] = "gzip";
 
-  // TLS 请求器暂不支持二进制 body，此处固定使用 axios
   try {
     for (const log of logs) {
       const serializeData = serializeTelemetryBatch(log);
       if (!serializeData.success) {
         throw new Error(`Telemetry proto 序列化失败: ${serializeData.error}`);
       }
-      const serializeLogBody = serializeData.data;
-      headers["Content-Length"] = String(serializeLogBody.length);
+      const serializeLogBody = Buffer.from(serializeData.data);
+      const requestHeaders = {
+        ...headers,
+        "Content-Length": String(serializeLogBody.length)
+      };
 
-      await axios({
+      await requesterManager.fetch("https://play.googleapis.com/log", {
         method: 'POST',
-        url: "https://play.googleapis.com/log",
-        headers,
-        data: serializeLogBody
+        headers: requestHeaders,
+        body: serializeLogBody,
+        okStatus: [200, 204]
       });
     }
   } catch (error) {

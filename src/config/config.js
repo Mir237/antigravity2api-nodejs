@@ -413,6 +413,8 @@ export function buildConfig(jsonConfig, upstreamCfg = {}) {
     },
     admin: getAdminCredentials(),
     useNativeAxios: jsonConfig.other?.useNativeAxios !== false,
+    cloudCodeTransport: jsonConfig.other?.cloudCodeTransport === 'go' ? 'go' : 'fingerprint',
+    allowUnfingerprintedCloudCodeFallback: jsonConfig.other?.allowUnfingerprintedCloudCodeFallback !== false,
     forceIPv4: jsonConfig.other?.forceIPv4 === true,
     timeout: jsonConfig.other?.timeout || DEFAULT_TIMEOUT,
     retryTimes: Number.isFinite(jsonConfig.other?.retryTimes) ? jsonConfig.other.retryTimes : DEFAULT_RETRY_TIMES,

@@ -8,6 +8,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.join(__dirname, '..');
 const distDir = path.join(rootDir, 'dist');
 const bundleDir = path.join(distDir, 'bundle');
+const goWorkerSrcDir = path.join(rootDir, 'src', 'go', 'cloudcode_bridge');
 
 // 转换为正斜杠路径（跨平台兼容）
 const toSlash = (p) => p.replace(/\\/g, '/');
@@ -62,6 +63,14 @@ const outputNameMap = {
   'node18-linux-arm64': 'antigravity-linux-arm64',
   'node18-macos-x64': 'antigravity-macos-x64',
   'node18-macos-arm64': 'antigravity-macos-arm64'
+};
+
+const goWorkerTargetMap = {
+  'node18-win-x64': { goos: 'windows', goarch: 'amd64', filename: 'cloudcode_go_worker_windows_amd64.exe' },
+  'node18-linux-x64': { goos: 'linux', goarch: 'amd64', filename: 'cloudcode_go_worker_linux_amd64' },
+  'node18-linux-arm64': { goos: 'linux', goarch: 'arm64', filename: 'cloudcode_go_worker_linux_arm64' },
+  'node18-macos-x64': { goos: 'darwin', goarch: 'amd64', filename: 'cloudcode_go_worker_darwin_amd64' },
+  'node18-macos-arm64': { goos: 'darwin', goarch: 'arm64', filename: 'cloudcode_go_worker_darwin_arm64' }
 };
 
 // 平台对应的 bin 文件映射
@@ -155,6 +164,31 @@ function runPkg(args) {
   }
 }
 
+function buildGoWorker(targetKey, outputDir) {
+  const targetInfo = goWorkerTargetMap[targetKey];
+  if (!targetInfo) {
+    console.warn(`  ⚠ Warning: no Go worker target mapping for ${targetKey}`);
+    return;
+  }
+
+  const outputPath = path.join(outputDir, targetInfo.filename);
+  const env = {
+    ...process.env,
+    GOOS: targetInfo.goos,
+    GOARCH: targetInfo.goarch,
+    CGO_ENABLED: '0'
+  };
+
+  const cmd = `go build -o "${outputPath}" .`;
+  console.log(`  🛠️ Building Go worker for ${targetKey} -> bin/${targetInfo.filename}`);
+  execSync(cmd, {
+    cwd: goWorkerSrcDir,
+    stdio: 'inherit',
+    env,
+    shell: true
+  });
+}
+
 // 构建 pkg 命令
 const targets = resolvedTarget.split(',');
 const isMultiTarget = targets.length > 1;
@@ -239,6 +273,11 @@ try {
     }
     fs.mkdirSync(binDestDir, { recursive: true });
 
+    const goWorkerTargets = isMultiTarget ? targets : [resolvedTarget];
+    for (const goTarget of goWorkerTargets) {
+      buildGoWorker(goTarget, binDestDir);
+    }
+
     // 只复制对应平台的 bin 文件
     const targetBinFiles = isMultiTarget
       ? [...new Set(targets.map(t => binFileMap[t]).filter(Boolean))]  // 多目标：去重后的所有文件
@@ -255,16 +294,17 @@ try {
           console.warn(`  ⚠ Warning: bin/${binFile} not found`);
         }
       }
-    // 复制 tls_config.json
-    const configFile = 'tls_config.json';
-    const configSrcPath = path.join(binSrcDir, configFile);
-    const configDestPath = path.join(binDestDir, configFile);
-    if (fs.existsSync(configSrcPath)) {
-      fs.copyFileSync(configSrcPath, configDestPath);
-      console.log(`  ✓ Copied bin/${configFile}`);
-} else {
-  console.warn(`  ⚠ Warning: bin/${configFile} not found`);
-}
+    // 复制 TLS 配置文件
+    for (const configFile of ['tls_config.json', 'cloudcode_tls_config.json']) {
+      const configSrcPath = path.join(binSrcDir, configFile);
+      const configDestPath = path.join(binDestDir, configFile);
+      if (fs.existsSync(configSrcPath)) {
+        fs.copyFileSync(configSrcPath, configDestPath);
+        console.log(`  ✓ Copied bin/${configFile}`);
+      } else {
+        console.warn(`  ⚠ Warning: bin/${configFile} not found`);
+      }
+    }
     } else {
       // 如果没有映射，复制所有文件（兼容旧行为）
       try {

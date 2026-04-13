@@ -1,10 +1,10 @@
-import axios from 'axios';
 import path from 'path';
 import { log } from '../utils/logger.js';
 import { generateTokenId } from '../utils/idGenerator.js';
 import config, { getConfigJson } from '../config/config.js';
 import { GEMINICLI_OAUTH_CONFIG } from '../constants/oauth.js';
-import { buildAxiosRequestConfig, httpRequest } from '../utils/httpClient.js';
+import { buildAuthorizedHeaders } from '../utils/googleAuth.js';
+import requesterManager from '../utils/requesterManager.js';
 import {
   DEFAULT_REQUEST_COUNT_PER_TOKEN,
   TOKEN_REFRESH_BUFFER
@@ -236,17 +236,17 @@ class GeminiCliTokenManager {
     });
 
     try {
-      const response = await axios(buildAxiosRequestConfig({
+      const response = await requesterManager.fetch(GEMINICLI_OAUTH_CONFIG.TOKEN_URL, {
         method: 'POST',
-        url: GEMINICLI_OAUTH_CONFIG.TOKEN_URL,
         headers: {
           'Host': 'oauth2.googleapis.com',
           'User-Agent': 'google-oauth-playground',
           'Content-Type': 'application/x-www-form-urlencoded',
           'Accept-Encoding': 'gzip'
         },
-        data: body.toString()
-      }));
+        body: body.toString(),
+        okStatus: [200]
+      });
 
       token.access_token = response.data.access_token;
       token.expires_in = response.data.expires_in;
@@ -254,8 +254,8 @@ class GeminiCliTokenManager {
       this.saveToFile(token);
       return token;
     } catch (error) {
-      const statusCode = error.response?.status;
-      const rawBody = error.response?.data;
+      const statusCode = error.status;
+      const rawBody = error.message;
       const message = typeof rawBody === 'string' ? rawBody : (rawBody?.error?.message || error.message || '刷新 token 失败');
       throw new TokenError(message, tokenId, statusCode || 500);
     }
@@ -303,13 +303,10 @@ class GeminiCliTokenManager {
     const baseUrl = geminicliConfig.baseUrl || GEMINICLI_API_CONFIG.BASE_URL;
     const url = `${baseUrl}/v1internal:loadCodeAssist`;
 
-    const headers = {
-      'Host': geminicliConfig.host || GEMINICLI_API_CONFIG.HOST,
-      'User-Agent': geminicliConfig.userAgent || GEMINICLI_API_CONFIG.USER_AGENT,
-      'Authorization': `Bearer ${token.access_token}`,
-      'Content-Type': 'application/json',
-      'Accept-Encoding': 'gzip'
-    };
+    const headers = buildAuthorizedHeaders(token, {
+      host: geminicliConfig.host || GEMINICLI_API_CONFIG.HOST,
+      userAgent: geminicliConfig.userAgent || GEMINICLI_API_CONFIG.USER_AGENT
+    });
 
     const requestBody = {
       metadata: {
@@ -320,12 +317,11 @@ class GeminiCliTokenManager {
     };
 
     try {
-      const response = await httpRequest({
+      const response = await requesterManager.fetch(url, {
         method: 'POST',
-        url,
         headers,
-        data: requestBody,
-        timeout: 30000
+        body: requestBody,
+        okStatus: [200]
       });
 
       const data = response.data;
@@ -367,13 +363,10 @@ class GeminiCliTokenManager {
     const baseUrl = geminicliConfig.baseUrl || GEMINICLI_API_CONFIG.BASE_URL;
     const url = `${baseUrl}/v1internal:onboardUser`;
 
-    const headers = {
-      'Host': geminicliConfig.host || GEMINICLI_API_CONFIG.HOST,
-      'User-Agent': geminicliConfig.userAgent || GEMINICLI_API_CONFIG.USER_AGENT,
-      'Authorization': `Bearer ${token.access_token}`,
-      'Content-Type': 'application/json',
-      'Accept-Encoding': 'gzip'
-    };
+    const headers = buildAuthorizedHeaders(token, {
+      host: geminicliConfig.host || GEMINICLI_API_CONFIG.HOST,
+      userAgent: geminicliConfig.userAgent || GEMINICLI_API_CONFIG.USER_AGENT
+    });
 
     // 从 loadCodeAssist 响应中获取默认 tier
     let tierId = 'LEGACY';
@@ -400,12 +393,11 @@ class GeminiCliTokenManager {
       log.debug(`[GeminiCLI] onboardUser 轮询 ${attempt}/${maxAttempts}`);
 
       try {
-        const response = await httpRequest({
+        const response = await requesterManager.fetch(url, {
           method: 'POST',
-          url,
           headers,
-          data: requestBody,
-          timeout: 30000
+          body: requestBody,
+          okStatus: [200]
         });
 
         const data = response.data;
@@ -569,6 +561,9 @@ class GeminiCliTokenManager {
       if (tokenData.projectId) {
         newToken.projectId = tokenData.projectId;
       }
+      if (tokenData.quotaProjectId) {
+        newToken.quotaProjectId = tokenData.quotaProjectId;
+      }
 
       allTokens.push(newToken);
       await this.store.writeAll(allTokens);
@@ -631,7 +626,8 @@ class GeminiCliTokenManager {
         timestamp: token.timestamp,
         enable: token.enable !== false,
         email: token.email || null,
-        projectId: token.projectId || null
+        projectId: token.projectId || null,
+        quotaProjectId: token.quotaProjectId || token.projectId || null
       }));
     } catch (error) {
       log.error('[GeminiCLI] 获取Token列表失败:', error.message);

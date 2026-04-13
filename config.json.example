@@ -30,22 +30,21 @@
   },
   "other": {
     "timeout": 300000,
-    "retryTimes": 10,
+    "retryTimes": 3,
     "forceIPv4": false,
     "skipProjectIdFetch": false,
     "useNativeAxios": false,
-    "cloudCodeTransport": "fingerprint",
-    "allowUnfingerprintedCloudCodeFallback": true,
-    "useContextSystemPrompt": false,
+    "cloudCodeTransport": "go",
+    "useContextSystemPrompt": true,
     "officialPromptPosition": "before",
-    "mergeSystemPrompt": false,
+    "mergeSystemPrompt": true,
     "passSignatureToClient": false,
     "useFallbackSignature": false,
     "cacheAllSignatures": false,
     "cacheToolSignatures": true,
     "cacheImageSignatures": true,
     "cacheThinking": true,
-    "fakeNonStream": true,
-    "alwaysUseCredits": false
+    "fakeNonStream": false,
+    "alwaysUseCredits": true
   }
 }

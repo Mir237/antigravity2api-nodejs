@@ -121,23 +121,38 @@ jobs:
         run: |
           DATE=$(date +'%Y%m%d')
           SHA_SHORT=$(git rev-parse --short HEAD)
-          
-          # 获取今天已有的 release 数量
-          COUNT=$(git tag -l "${DATE}.*" | wc -l)
+          BRANCH="${{ github.ref_name }}"
+          BRANCH_SLUG=$(echo "$BRANCH" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9._-]#-#g')
+
+          if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
+            TAG_PATTERN="${DATE}.*"
+            RELEASE_PREFIX=""
+          else
+            TAG_PATTERN="${BRANCH_SLUG}-${DATE}.*"
+            RELEASE_PREFIX="[实验] "
+          fi
+
+          # 获取当前分支命名空间下今天已有的 release 数量
+          COUNT=$(git tag -l "$TAG_PATTERN" | wc -l)
           BUILD_NUM=$((COUNT + 1))
-          
-          TAG="${DATE}.${BUILD_NUM}-${SHA_SHORT}"
-          
+
+          if [ -n "$RELEASE_PREFIX" ]; then
+            TAG="${BRANCH_SLUG}-${DATE}.${BUILD_NUM}-${SHA_SHORT}"
+          else
+            TAG="${DATE}.${BUILD_NUM}-${SHA_SHORT}"
+          fi
+
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "date=$DATE" >> $GITHUB_OUTPUT
           echo "build_num=$BUILD_NUM" >> $GITHUB_OUTPUT
           echo "sha=$SHA_SHORT" >> $GITHUB_OUTPUT
+          echo "release_prefix=$RELEASE_PREFIX" >> $GITHUB_OUTPUT
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
-          name: Build ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.release_prefix }}Build ${{ steps.tag.outputs.tag }}
           make_latest: ${{ github.ref_name == 'main' || github.ref_name == 'master' }}
           prerelease: ${{ github.ref_name != 'main' && github.ref_name != 'master' }}
           files: |

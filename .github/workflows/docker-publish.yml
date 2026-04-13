@@ -57,6 +57,12 @@ jobs:
         id: image
         run: echo "name=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
+      - name: Generate branch slug
+        id: branch
+        run: |
+          BRANCH_SLUG=$(echo "${{ github.ref_name }}" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9._-]#-#g')
+          echo "slug=${BRANCH_SLUG}" >> $GITHUB_OUTPUT
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -73,16 +79,20 @@ jobs:
       - name: Generate Docker tags
         id: tags
         run: |
-          IMAGE="${{ env.REGISTRY }}/${{ steps.image.outputs.name }}"
+          IMAGE_BASE="${{ env.REGISTRY }}/${{ steps.image.outputs.name }}"
           BRANCH="${{ github.ref_name }}"
+          BRANCH_SLUG="${{ steps.branch.outputs.slug }}"
           ARCH="${{ matrix.arch }}"
-          
-          TAGS="${IMAGE}:${BRANCH}-${ARCH}"
-          
-          if [ "$BRANCH" == "main" ]; then
-            TAGS="${TAGS},${IMAGE}:latest-${ARCH}"
+
+          if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
+            IMAGE="${IMAGE_BASE}"
+            TAGS="${IMAGE}:${BRANCH}-${ARCH},${IMAGE}:latest-${ARCH}"
+          else
+            IMAGE="${IMAGE_BASE}-exp"
+            TAGS="${IMAGE}:${BRANCH_SLUG}-${ARCH}"
           fi
-          
+
+          echo "image=${IMAGE}" >> $GITHUB_OUTPUT
           echo "tags=${TAGS}" >> $GITHUB_OUTPUT
 
       - name: Build and push Docker image (${{ matrix.arch }})

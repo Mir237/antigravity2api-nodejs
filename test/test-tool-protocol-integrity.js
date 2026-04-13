@@ -172,6 +172,56 @@ function testGeminiSignatureLookupUsesToolCallId() {
   config.useFallbackSignature = originalUseFallbackSignature;
 }
 
+function testGeminiReusesCurrentThoughtSignatureForToolCall() {
+  const originalUseFallbackSignature = config.useFallbackSignature;
+  config.useFallbackSignature = false;
+
+  clearThoughtSignatureCaches();
+
+  const requestBody = generateGeminiRequestBody(
+    {
+      contents: [
+        { role: 'user', parts: [{ text: 'hello' }] },
+        {
+          role: 'model',
+          parts: [
+            {
+              text: 'internal reasoning',
+              thought: true,
+              thoughtSignature: 'sig-current-gemini'
+            },
+            {
+              functionCall: {
+                id: 'call_current_sig',
+                name: 'read_url',
+                args: { url: 'https://example.com' }
+              }
+            }
+          ]
+        }
+      ],
+      tools: [
+        {
+          functionDeclarations: [
+            {
+              name: 'read_url',
+              description: 'Read a URL',
+              parameters: { type: 'object', properties: { url: { type: 'string' } } }
+            }
+          ]
+        }
+      ]
+    },
+    'gemini-2.5-pro',
+    mockToken
+  );
+
+  const toolCallPart = requestBody.request.contents[1].parts.find((part) => part.functionCall);
+  assert.equal(toolCallPart.thoughtSignature, 'sig-current-gemini');
+
+  config.useFallbackSignature = originalUseFallbackSignature;
+}
+
 function testGeminiCliSignatureLookupUsesToolCallId() {
   clearThoughtSignatureCaches();
   setToolCallSignature(null, 'gemini-2.5-pro', 'call_cli_sig', 'sig-cli');
@@ -213,10 +263,54 @@ function testGeminiCliSignatureLookupUsesToolCallId() {
   assert.equal(toolCallPart.thoughtSignature, 'sig-cli');
 }
 
+function testGeminiCliReusesCurrentThoughtSignatureForToolCall() {
+  clearThoughtSignatureCaches();
+
+  const { geminiRequest } = convertToGeminiCli({
+    model: 'gemini-2.5-pro',
+    contents: [
+      { role: 'user', parts: [{ text: 'hello' }] },
+      {
+        role: 'model',
+        parts: [
+          {
+            text: 'internal reasoning',
+            thought: true,
+            thoughtSignature: 'sig-current-cli'
+          },
+          {
+            functionCall: {
+              id: 'call_current_cli_sig',
+              name: 'read_url',
+              args: { url: 'https://example.com' }
+            }
+          }
+        ]
+      }
+    ],
+    tools: [
+      {
+        functionDeclarations: [
+          {
+            name: 'read_url',
+            description: 'Read a URL',
+            parameters: { type: 'object', properties: { url: { type: 'string' } } }
+          }
+        ]
+      }
+    ]
+  });
+
+  const toolCallPart = geminiRequest.contents[1].parts.find((part) => part.functionCall);
+  assert.equal(toolCallPart.thoughtSignature, 'sig-current-cli');
+}
+
 testNormalizerRepairsOrphanToolCalls();
 testNormalizerDropsOrphanToolResults();
 testOpenAISignatureLookupUsesToolCallId();
 testGeminiSignatureLookupUsesToolCallId();
+testGeminiReusesCurrentThoughtSignatureForToolCall();
 testGeminiCliSignatureLookupUsesToolCallId();
+testGeminiCliReusesCurrentThoughtSignatureForToolCall();
 
 console.log('tool protocol integrity tests passed');

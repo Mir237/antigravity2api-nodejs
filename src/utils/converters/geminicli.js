@@ -516,13 +516,21 @@ function processGeminiModelThoughts(content, reasoningSignature, reasoningConten
   const parts = content.parts;
   const fallbackSig = reasoningSignature || toolSignature;
   const fallbackContent = (fallbackSig === reasoningSignature) ? (reasoningContent || ' ') : (toolContent || ' ');
+  let messageThoughtSignature = null;
+
+  for (const part of parts) {
+    if (part?.thought === true && part?.thoughtSignature && !messageThoughtSignature) {
+      messageThoughtSignature = part.thoughtSignature;
+    }
+  }
 
   // 非思考模型：仅为 inlineData 自动补签名
   if (!enableThinking) {
-    if (!fallbackSig) return;
+    const nonThinkingSignature = messageThoughtSignature || fallbackSig;
+    if (!nonThinkingSignature) return;
     for (const part of parts) {
       if (part.inlineData && !part.thoughtSignature) {
-        part.thoughtSignature = fallbackSig;
+        part.thoughtSignature = nonThinkingSignature;
       }
     }
     return;
@@ -556,12 +564,23 @@ function processGeminiModelThoughts(content, reasoningSignature, reasoningConten
   // 合并或添加 thought 和签名
   if (thoughtIndex !== -1 && signatureIndex !== -1) {
     parts[thoughtIndex].thoughtSignature = signatureValue;
+    if (!messageThoughtSignature) {
+      messageThoughtSignature = signatureValue;
+    }
     parts.splice(signatureIndex, 1);
   } else if (thoughtIndex !== -1 && signatureIndex === -1) {
-    if (fallbackSig) parts[thoughtIndex].thoughtSignature = fallbackSig;
+    if (fallbackSig) {
+      parts[thoughtIndex].thoughtSignature = fallbackSig;
+      if (!messageThoughtSignature) {
+        messageThoughtSignature = fallbackSig;
+      }
+    }
   } else if (thoughtIndex === -1 && fallbackSig) {
     // 只有在有签名时才添加 thought part
     parts.unshift(createThoughtPart(fallbackContent, fallbackSig));
+    if (!messageThoughtSignature) {
+      messageThoughtSignature = fallbackSig;
+    }
   }
 
   // 收集独立的签名 parts（用于 functionCall）
@@ -592,7 +611,9 @@ function processGeminiModelThoughts(content, reasoningSignature, reasoningConten
         continue;
       }
 
-      const partFallback = part.functionCall ? (toolSignature || reasoningSignature) : (reasoningSignature || toolSignature);
+      const partFallback = part.functionCall
+        ? (messageThoughtSignature || toolSignature || reasoningSignature)
+        : (messageThoughtSignature || reasoningSignature || toolSignature);
       if (partFallback) part.thoughtSignature = partFallback;
     }
   }

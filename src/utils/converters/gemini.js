@@ -153,9 +153,9 @@ function processModelThoughts(content, reasoningSignature, reasoningContent, too
         continue;
       }
 
-      // Gemini 当前消息上的 thoughtSignature 应优先复用，避免 functionCall 误绑到旧缓存签名。
+      // Gemini 当前消息已有 thoughtSignature 时，不要再隐式复制到 functionCall 上。
       const partFallback = part.functionCall
-        ? (messageThoughtSignature || toolSignature || reasoningSignature)
+        ? (messageThoughtSignature ? null : (toolSignature || reasoningSignature))
         : (messageThoughtSignature || reasoningSignature || toolSignature);
       if (partFallback) part.thoughtSignature = partFallback;
     }

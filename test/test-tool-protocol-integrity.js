@@ -172,7 +172,7 @@ function testGeminiSignatureLookupUsesToolCallId() {
   config.useFallbackSignature = originalUseFallbackSignature;
 }
 
-function testGeminiReusesCurrentThoughtSignatureForToolCall() {
+function testGeminiDoesNotImplicitlyCopyThoughtSignatureToToolCall() {
   const originalUseFallbackSignature = config.useFallbackSignature;
   config.useFallbackSignature = false;
 
@@ -217,7 +217,7 @@ function testGeminiReusesCurrentThoughtSignatureForToolCall() {
   );
 
   const toolCallPart = requestBody.request.contents[1].parts.find((part) => part.functionCall);
-  assert.equal(toolCallPart.thoughtSignature, 'sig-current-gemini');
+  assert.equal(toolCallPart.thoughtSignature, undefined);
 
   config.useFallbackSignature = originalUseFallbackSignature;
 }
@@ -263,7 +263,7 @@ function testGeminiCliSignatureLookupUsesToolCallId() {
   assert.equal(toolCallPart.thoughtSignature, 'sig-cli');
 }
 
-function testGeminiCliReusesCurrentThoughtSignatureForToolCall() {
+function testGeminiCliDoesNotImplicitlyCopyThoughtSignatureToToolCall() {
   clearThoughtSignatureCaches();
 
   const { geminiRequest } = convertToGeminiCli({
@@ -302,15 +302,69 @@ function testGeminiCliReusesCurrentThoughtSignatureForToolCall() {
   });
 
   const toolCallPart = geminiRequest.contents[1].parts.find((part) => part.functionCall);
-  assert.equal(toolCallPart.thoughtSignature, 'sig-current-cli');
+  assert.equal(toolCallPart.thoughtSignature, undefined);
+}
+
+function testOpenAIGeminiDoesNotImplicitlyCopyMessageThoughtSignatureToToolCall() {
+  const originalUseFallbackSignature = config.useFallbackSignature;
+  config.useFallbackSignature = false;
+
+  clearThoughtSignatureCaches();
+
+  const requestBody = generateRequestBody(
+    [
+      { role: 'user', content: 'hello' },
+      {
+        role: 'assistant',
+        content: '',
+        reasoning_content: 'internal reasoning',
+        thoughtSignature: 'sig-openai-message',
+        tool_calls: [
+          {
+            id: 'call_openai_sig',
+            type: 'function',
+            function: {
+              name: 'lookup_weather',
+              arguments: JSON.stringify({ city: 'Shanghai' })
+            }
+          }
+        ]
+      },
+      {
+        role: 'tool',
+        tool_call_id: 'call_openai_sig',
+        content: 'sunny'
+      }
+    ],
+    'gemini-2.5-pro',
+    {},
+    [
+      {
+        type: 'function',
+        function: {
+          name: 'lookup_weather',
+          description: 'Lookup weather',
+          parameters: { type: 'object', properties: { city: { type: 'string' } } }
+        }
+      }
+    ],
+    mockToken
+  );
+
+  const modelMessage = requestBody.request.contents.find((content) => content.role === 'model');
+  const toolCallPart = modelMessage.parts.find((part) => part.functionCall);
+  assert.equal(toolCallPart.thoughtSignature, undefined);
+
+  config.useFallbackSignature = originalUseFallbackSignature;
 }
 
 testNormalizerRepairsOrphanToolCalls();
 testNormalizerDropsOrphanToolResults();
 testOpenAISignatureLookupUsesToolCallId();
+testOpenAIGeminiDoesNotImplicitlyCopyMessageThoughtSignatureToToolCall();
 testGeminiSignatureLookupUsesToolCallId();
-testGeminiReusesCurrentThoughtSignatureForToolCall();
+testGeminiDoesNotImplicitlyCopyThoughtSignatureToToolCall();
 testGeminiCliSignatureLookupUsesToolCallId();
-testGeminiCliReusesCurrentThoughtSignatureForToolCall();
+testGeminiCliDoesNotImplicitlyCopyThoughtSignatureToToolCall();
 
 console.log('tool protocol integrity tests passed');

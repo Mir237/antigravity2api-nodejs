@@ -49,6 +49,21 @@ const testMessages = [
   }
 ];
 
+const emptyAssistantMessages = [
+  {
+    role: 'user',
+    content: '调用工具'
+  },
+  {
+    role: 'assistant',
+    content: ''
+  },
+  {
+    role: 'user',
+    content: '继续'
+  }
+];
+
 const testTools = [
   {
     type: 'function',
@@ -110,5 +125,19 @@ assert.equal(contents[2]?.parts?.[0]?.functionResponse?.response?.output, '北�
 assert.equal(contents[2]?.parts?.[1]?.functionResponse?.id, 'call_002');
 assert.equal(contents[2]?.parts?.[1]?.functionResponse?.name, 'get_news');
 assert.equal(contents[2]?.parts?.[1]?.functionResponse?.response?.output, '最新科技新闻：AI技术突破');
+
+const emptyAssistantResult = generateRequestBody(
+  emptyAssistantMessages,
+  'gemini-2.5-pro',
+  {},
+  [],
+  mockToken
+);
+
+assert.equal(emptyAssistantResult.request.contents.length, 2);
+assert.equal(emptyAssistantResult.request.contents[0]?.role, 'user');
+assert.equal(emptyAssistantResult.request.contents[0]?.parts?.[0]?.text, '调用工具');
+assert.equal(emptyAssistantResult.request.contents[1]?.role, 'user');
+assert.equal(emptyAssistantResult.request.contents[1]?.parts?.[0]?.text, '继续');
 
 console.log('transform tests passed');

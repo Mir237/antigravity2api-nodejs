@@ -169,11 +169,15 @@ export function processToolName(originalName, sessionId, actualModelName) {
 export function pushModelMessage({ parts, toolCalls, hasContent }, antigravityMessages) {
   const lastMessage = antigravityMessages[antigravityMessages.length - 1];
   const hasToolCalls = toolCalls && toolCalls.length > 0;
+  const allParts = [...parts, ...(toolCalls || [])];
+
+  if (allParts.length === 0) {
+    return;
+  }
 
   if (lastMessage?.role === 'model' && hasToolCalls && !hasContent) {
     lastMessage.parts.push(...toolCalls);
   } else {
-    const allParts = [...parts, ...(toolCalls || [])];
     antigravityMessages.push({ role: 'model', parts: allParts });
   }
   //console.log(JSON.stringify(antigravityMessages,null,2));

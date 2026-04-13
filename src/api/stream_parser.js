@@ -136,7 +136,7 @@ function parseAndEmitStreamChunk(line, state, callback) {
           callback({ type: 'text', content: part.text });
         } else if (part.functionCall) {
           const toolCall = convertToToolCall(part.functionCall, state.sessionId, state.model);
-          const sig = part.thoughtSignature || state.reasoningSignature || null;
+          const sig = part.thoughtSignature || null;
           if (sig) {
             toolCall.thoughtSignature = sig;
             // 标记有工具调用

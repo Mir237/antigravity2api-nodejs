@@ -49,6 +49,8 @@ function handleAssistantMessage(message, antigravityMessages, enableThinking, ac
   const hasToolCalls = message.tool_calls && message.tool_calls.length > 0;
   const hasContent = message.content && message.content.trim() !== '';
   const { reasoningSignature, reasoningContent, toolSignature, toolContent } = getSignatureContext(sessionId, actualModelName, hasTools);
+  const messageHasThoughtSignature = Boolean(message.thoughtSignature);
+  const isGeminiModel = typeof actualModelName === 'string' && actualModelName.startsWith('gemini');
   
   const toolCalls = hasToolCalls
     ? message.tool_calls.map(toolCall => {
@@ -56,8 +58,11 @@ function handleAssistantMessage(message, antigravityMessages, enableThinking, ac
       const cachedToolCallSignature = toolCall.id
         ? getToolCallSignature(sessionId, actualModelName, toolCall.id)
         : null;
+      const implicitFallbackSignature = (isGeminiModel && messageHasThoughtSignature)
+        ? null
+        : (toolSignature || reasoningSignature);
       const signature = enableThinking
-        ? (toolCall.thoughtSignature || cachedToolCallSignature?.signature || toolSignature || message.thoughtSignature || reasoningSignature)
+        ? (toolCall.thoughtSignature || cachedToolCallSignature?.signature || implicitFallbackSignature)
         : null;
       return createFunctionCallPart(toolCall.id, safeName, toolCall.function.arguments, signature);
     })

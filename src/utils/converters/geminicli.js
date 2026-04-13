@@ -612,7 +612,7 @@ function processGeminiModelThoughts(content, reasoningSignature, reasoningConten
       }
 
       const partFallback = part.functionCall
-        ? (messageThoughtSignature || toolSignature || reasoningSignature)
+        ? (messageThoughtSignature ? null : (toolSignature || reasoningSignature))
         : (messageThoughtSignature || reasoningSignature || toolSignature);
       if (partFallback) part.thoughtSignature = partFallback;
     }

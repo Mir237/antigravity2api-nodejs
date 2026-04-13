@@ -42,7 +42,7 @@ export function parseGeminiCandidateParts({
 
     if (part?.functionCall) {
       const toolCall = convertToToolCall(part.functionCall, sessionId ?? null, model);
-      const sig = part.thoughtSignature || lastSeenSignature || null;
+      const sig = part.thoughtSignature || null;
       if (sig) toolCall.thoughtSignature = sig;
       toolCalls.push(toolCall);
       continue;

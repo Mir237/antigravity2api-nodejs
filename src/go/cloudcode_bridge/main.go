@@ -121,11 +121,12 @@ func (w *workerState) handle(request workerRequest) {
 }
 
 func (w *workerState) handleRequest(request workerRequest) {
-	response, err := w.perform(request.Params)
+	response, cancel, err := w.perform(request.Params)
 	if err != nil {
 		w.send(workerResponse{Type: "error", ID: request.ID, Message: err.Error()})
 		return
 	}
+	defer cancel()
 	defer response.Body.Close()
 
 	reader, err := wrapResponseBody(response)
@@ -151,11 +152,12 @@ func (w *workerState) handleRequest(request workerRequest) {
 }
 
 func (w *workerState) handleStream(request workerRequest) {
-	response, err := w.perform(request.Params)
+	response, cancel, err := w.perform(request.Params)
 	if err != nil {
 		w.send(workerResponse{Type: "error", ID: request.ID, Message: err.Error()})
 		return
 	}
+	defer cancel()
 	defer response.Body.Close()
 
 	reader, err := wrapResponseBody(response)
@@ -193,19 +195,19 @@ func (w *workerState) handleStream(request workerRequest) {
 	}
 }
 
-func (w *workerState) perform(params requestParams) (*http.Response, error) {
+func (w *workerState) perform(params requestParams) (*http.Response, context.CancelFunc, error) {
 	timeout := 300 * time.Second
 	if params.TimeoutMS > 0 {
 		timeout = time.Duration(params.TimeoutMS) * time.Millisecond
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
 
 	client := w.client
 	if strings.TrimSpace(params.Proxy) != "" {
 		proxied, err := buildProxiedHTTPClient(strings.TrimSpace(params.Proxy))
 		if err != nil {
-			return nil, err
+			cancel()
+			return nil, nil, err
 		}
 		client = proxied
 	}
@@ -217,18 +219,26 @@ func (w *workerState) perform(params requestParams) (*http.Response, error) {
 
 	requestBody, err := decodeRequestBody(params)
 	if err != nil {
-		return nil, err
+		cancel()
+		return nil, nil, err
 	}
 
 	request, err := http.NewRequestWithContext(ctx, method, params.URL, bytes.NewReader(requestBody))
 	if err != nil {
-		return nil, err
+		cancel()
+		return nil, nil, err
 	}
 	for key, value := range params.Headers {
 		request.Header.Set(key, value)
 	}
 
-	return client.Do(request)
+	response, err := client.Do(request)
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+
+	return response, cancel, nil
 }
 
 func decodeRequestBody(params requestParams) ([]byte, error) {

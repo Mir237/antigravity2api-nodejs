@@ -135,28 +135,47 @@ function processModelThoughts(content, reasoningSignature, reasoningContent, too
   }
 
   // 为 functionCall / inlineData 分配签名
+  // 规则：
+  // 1. 优先使用精确 toolCallId 命中
+  // 2. 其次消费同消息里的独立签名 part
+  // 3. 对连续工具调用，只允许复用"同一条消息里已显式出现过"的 functionCall 签名
+  // 4. 禁止把全局/后续轮次的 fallback 签名灌回旧 functionCall
   let sigIndex = 0;
+  let sameMessageToolSignature = parts.find((part) => part.functionCall && part.thoughtSignature)?.thoughtSignature || null;
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i];
+    if (part.functionCall && part.thoughtSignature) {
+      sameMessageToolSignature = part.thoughtSignature;
+      continue;
+    }
+
     if ((!part.thoughtSignature) && (part.functionCall || part.inlineData)) {
       if (part.functionCall?.id) {
         const cachedToolCallSignature = getToolCallSignature(sessionId, actualModelName, part.functionCall.id);
         if (cachedToolCallSignature?.signature) {
           part.thoughtSignature = cachedToolCallSignature.signature;
+          sameMessageToolSignature = cachedToolCallSignature.signature;
           continue;
         }
       }
 
       if (sigIndex < standaloneSignatures.length) {
         part.thoughtSignature = standaloneSignatures[sigIndex].signature;
+        if (part.functionCall) {
+          sameMessageToolSignature = standaloneSignatures[sigIndex].signature;
+        }
         sigIndex++;
         continue;
       }
 
-      // Gemini 当前消息已有 thoughtSignature 时，不要再隐式复制到 functionCall 上。
-      const partFallback = part.functionCall
-        ? (messageThoughtSignature ? null : (toolSignature || reasoningSignature))
-        : (messageThoughtSignature || reasoningSignature || toolSignature);
+      if (part.functionCall) {
+        if (sameMessageToolSignature) {
+          part.thoughtSignature = sameMessageToolSignature;
+        }
+        continue;
+      }
+
+      const partFallback = messageThoughtSignature || reasoningSignature || toolSignature;
       if (partFallback) part.thoughtSignature = partFallback;
     }
   }

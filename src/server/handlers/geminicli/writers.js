@@ -54,6 +54,7 @@ export function createGeminiCliStreamWriter({ format, res, id, created, response
             const args = safeParseJson(rest?.function?.arguments) || {};
             return {
               functionCall: {
+                ...(rest.id ? { id: rest.id } : {}),
                 name: rest.function.name,
                 args
               },
@@ -231,6 +232,7 @@ export function writeGeminiCliFakeStreamResponse({
         const args = safeParseJson(rest?.function?.arguments) || {};
         return {
           functionCall: {
+            ...(rest.id ? { id: rest.id } : {}),
             name: rest.function.name,
             args
           },

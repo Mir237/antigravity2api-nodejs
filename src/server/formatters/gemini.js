@@ -37,7 +37,6 @@ export const createGeminiResponse = (
   options = {}
 ) => {
   const passSignatureToClient = options.passSignatureToClient === true;
-  const fallbackThoughtSignature = options.fallbackThoughtSignature || null;
 
   const parts = [];
 
@@ -63,13 +62,13 @@ export const createGeminiResponse = (
       try {
         const functionCallPart = {
           functionCall: {
+            ...(tc.id ? { id: tc.id } : {}),
             name: tc.function.name,
             args: JSON.parse(tc.function.arguments)
           }
         };
-        const sig = tc.thoughtSignature || fallbackThoughtSignature;
-        if (sig && passSignatureToClient) {
-          functionCallPart.thoughtSignature = sig;
+        if (tc.thoughtSignature && passSignatureToClient) {
+          functionCallPart.thoughtSignature = tc.thoughtSignature;
         }
         parts.push(functionCallPart);
       } catch {

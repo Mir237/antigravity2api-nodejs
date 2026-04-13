@@ -216,8 +216,7 @@ export const handleGeminiCliRequest = async (req, res, forceFormat = null) => {
           'STOP',
           usage,
           {
-            passSignatureToClient: true,
-            fallbackThoughtSignature: finalReasoningSignature || null
+            passSignatureToClient: true
           }
         ));
       } else if (format === 'claude') {

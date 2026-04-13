@@ -3,6 +3,7 @@ import { normalizeToolProtocol } from '../src/utils/toolProtocolIntegrity.js';
 import { generateRequestBody } from '../src/utils/converters/openai.js';
 import { generateGeminiRequestBody } from '../src/utils/converters/gemini.js';
 import { convertToGeminiCli } from '../src/utils/converters/geminicli.js';
+import { createGeminiResponse } from '../src/server/formatters/gemini.js';
 import {
   clearThoughtSignatureCaches,
   getToolCallSignature,
@@ -172,6 +173,53 @@ function testGeminiSignatureLookupUsesToolCallId() {
   config.useFallbackSignature = originalUseFallbackSignature;
 }
 
+function testGeminiSignatureLookupDoesNotLeakAcrossToolCallIds() {
+  const originalUseFallbackSignature = config.useFallbackSignature;
+  config.useFallbackSignature = false;
+
+  clearThoughtSignatureCaches();
+  setToolCallSignature(mockToken.sessionId, 'gemini-2.5-pro', 'call_sig_a', 'sig-a');
+
+  const requestBody = generateGeminiRequestBody(
+    {
+      contents: [
+        { role: 'user', parts: [{ text: 'hello' }] },
+        {
+          role: 'model',
+          parts: [
+            {
+              functionCall: {
+                id: 'call_sig_b',
+                name: 'read_url',
+                args: { url: 'https://example.com/b' }
+              }
+            }
+          ]
+        }
+      ],
+      tools: [
+        {
+          functionDeclarations: [
+            {
+              name: 'read_url',
+              description: 'Read a URL',
+              parameters: { type: 'object', properties: { url: { type: 'string' } } }
+            }
+          ]
+        }
+      ]
+    },
+    'gemini-2.5-pro',
+    mockToken
+  );
+
+  const toolCallPart = requestBody.request.contents[1].parts[0];
+  assert.equal(toolCallPart.functionCall.id, 'call_sig_b');
+  assert.equal(toolCallPart.thoughtSignature, undefined);
+
+  config.useFallbackSignature = originalUseFallbackSignature;
+}
+
 function testGeminiDoesNotImplicitlyCopyThoughtSignatureToToolCall() {
   const originalUseFallbackSignature = config.useFallbackSignature;
   config.useFallbackSignature = false;
@@ -218,6 +266,60 @@ function testGeminiDoesNotImplicitlyCopyThoughtSignatureToToolCall() {
 
   const toolCallPart = requestBody.request.contents[1].parts.find((part) => part.functionCall);
   assert.equal(toolCallPart.thoughtSignature, undefined);
+
+  config.useFallbackSignature = originalUseFallbackSignature;
+}
+
+function testGeminiConsecutiveToolCallsReuseSameMessageToolSignature() {
+  const originalUseFallbackSignature = config.useFallbackSignature;
+  config.useFallbackSignature = false;
+
+  clearThoughtSignatureCaches();
+
+  const requestBody = generateGeminiRequestBody(
+    {
+      contents: [
+        { role: 'user', parts: [{ text: 'hello' }] },
+        {
+          role: 'model',
+          parts: [
+            {
+              functionCall: {
+                id: 'call_first_sig',
+                name: 'read_url',
+                args: { url: 'https://example.com/a' }
+              },
+              thoughtSignature: 'sig-first-tool'
+            },
+            {
+              functionCall: {
+                id: 'call_second_sig',
+                name: 'read_url',
+                args: { url: 'https://example.com/b' }
+              }
+            }
+          ]
+        }
+      ],
+      tools: [
+        {
+          functionDeclarations: [
+            {
+              name: 'read_url',
+              description: 'Read a URL',
+              parameters: { type: 'object', properties: { url: { type: 'string' } } }
+            }
+          ]
+        }
+      ]
+    },
+    'gemini-2.5-pro',
+    mockToken
+  );
+
+  const toolCallParts = requestBody.request.contents[1].parts.filter((part) => part.functionCall);
+  assert.equal(toolCallParts[0].thoughtSignature, 'sig-first-tool');
+  assert.equal(toolCallParts[1].thoughtSignature, 'sig-first-tool');
 
   config.useFallbackSignature = originalUseFallbackSignature;
 }
@@ -305,6 +407,80 @@ function testGeminiCliDoesNotImplicitlyCopyThoughtSignatureToToolCall() {
   assert.equal(toolCallPart.thoughtSignature, undefined);
 }
 
+function testGeminiCliConsecutiveToolCallsReuseSameMessageToolSignature() {
+  clearThoughtSignatureCaches();
+
+  const { geminiRequest } = convertToGeminiCli({
+    model: 'gemini-2.5-pro',
+    contents: [
+      { role: 'user', parts: [{ text: 'hello' }] },
+      {
+        role: 'model',
+        parts: [
+          {
+            functionCall: {
+              id: 'call_cli_first_sig',
+              name: 'read_url',
+              args: { url: 'https://example.com/a' }
+            },
+            thoughtSignature: 'sig-cli-first-tool'
+          },
+          {
+            functionCall: {
+              id: 'call_cli_second_sig',
+              name: 'read_url',
+              args: { url: 'https://example.com/b' }
+            }
+          }
+        ]
+      }
+    ],
+    tools: [
+      {
+        functionDeclarations: [
+          {
+            name: 'read_url',
+            description: 'Read a URL',
+            parameters: { type: 'object', properties: { url: { type: 'string' } } }
+          }
+        ]
+      }
+    ]
+  });
+
+  const toolCallParts = geminiRequest.contents[1].parts.filter((part) => part.functionCall);
+  assert.equal(toolCallParts[0].thoughtSignature, 'sig-cli-first-tool');
+  assert.equal(toolCallParts[1].thoughtSignature, 'sig-cli-first-tool');
+}
+
+function testGeminiFormatterDoesNotFallbackSignatureOntoToolCall() {
+  const response = createGeminiResponse(
+    null,
+    'internal reasoning',
+    'sig-message',
+    [
+      {
+        id: 'call_formatter_sig',
+        type: 'function',
+        function: {
+          name: 'read_url',
+          arguments: JSON.stringify({ url: 'https://example.com' })
+        }
+      }
+    ],
+    'STOP',
+    null,
+    {
+      passSignatureToClient: true,
+      fallbackThoughtSignature: 'sig-message'
+    }
+  );
+
+  const toolCallPart = response.candidates[0].content.parts.find((part) => part.functionCall);
+  assert.equal(toolCallPart.functionCall.id, 'call_formatter_sig');
+  assert.equal(toolCallPart.thoughtSignature, undefined);
+}
+
 function testOpenAIGeminiDoesNotImplicitlyCopyMessageThoughtSignatureToToolCall() {
   const originalUseFallbackSignature = config.useFallbackSignature;
   config.useFallbackSignature = false;
@@ -363,8 +539,12 @@ testNormalizerDropsOrphanToolResults();
 testOpenAISignatureLookupUsesToolCallId();
 testOpenAIGeminiDoesNotImplicitlyCopyMessageThoughtSignatureToToolCall();
 testGeminiSignatureLookupUsesToolCallId();
+testGeminiSignatureLookupDoesNotLeakAcrossToolCallIds();
 testGeminiDoesNotImplicitlyCopyThoughtSignatureToToolCall();
+testGeminiConsecutiveToolCallsReuseSameMessageToolSignature();
 testGeminiCliSignatureLookupUsesToolCallId();
 testGeminiCliDoesNotImplicitlyCopyThoughtSignatureToToolCall();
+testGeminiCliConsecutiveToolCallsReuseSameMessageToolSignature();
+testGeminiFormatterDoesNotFallbackSignatureOntoToolCall();
 
 console.log('tool protocol integrity tests passed');

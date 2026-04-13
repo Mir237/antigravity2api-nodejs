@@ -36,6 +36,12 @@ jobs:
           node-version: '18'
           cache: 'npm'
 
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: src/go/cloudcode_bridge/go.mod
+          cache-dependency-path: src/go/cloudcode_bridge/go.sum
+
       - name: Install dependencies
         run: npm ci
 
